@@ -12,7 +12,7 @@ from .grounding import verify
 
 
 def queue(c, message, now):
-    if not message.body.strip():
+    if not message.body.strip() and not message.attachments:
         return None
     recent = c.execute(
         select(func.count())
@@ -32,10 +32,11 @@ def queue(c, message, now):
             id=identity,
             message_id=message.message_id,
             sender=message.sender,
-            request=message.body[:4000],
+            request=message.body[:4000] or "Please help me understand this travel image.",
             status="queued",
             created_at=now,
             request_time=message.timestamp // 1000,
+            attachments_json=json.dumps(message.attachments),
         )
     )
     c.execute(
@@ -47,6 +48,8 @@ def queue(c, message, now):
 
 
 def context(c, discussion):
+    from .family import directory
+
     eligible = select(db.discussions.c.id).where(
         (db.discussions.c.status == "completed") | (db.discussions.c.id == discussion["id"])
     )
@@ -85,7 +88,12 @@ def context(c, discussion):
         "conversation": list(reversed(bounded_history)),
         "this_persons_explicit_trip_details": [dict(f) for f in memory],
         "default_destination": "Hyderabad, India",
-        "real_itinerary_status": "Not imported. Do not treat demo reservations as real bookings.",
+        "real_itinerary_status": (
+            "User-confirmed imports are information, not supplier verification. "
+            "Demo reservations stay separate."
+        ),
+        "imported_itinerary": [dict(x) for x in c.execute(select(db.imported)).mappings()],
+        "family_directory": directory(c),
         "pending_demo_booking_approvals": [
             {
                 "proposal_id": t["proposal_id"],
@@ -162,8 +170,14 @@ def forget(c, sender):
         .where(related, db.outbox.c.status.in_(["pending", "unknown"]))
         .values(status="cancelled")
     )
-    c.execute(update(db.outbox).where(related).values(body="[forgotten context]"))
+    c.execute(update(db.outbox).where(related).values(body="[forgotten context]", media_json=None))
+    c.execute(
+        update(db.confirmations)
+        .where(db.confirmations.c.sender == sender, db.confirmations.c.status == "pending")
+        .values(status="cancelled", payload="{}")
+    )
     c.execute(delete(db.tools).where(db.tools.c.discussion_id.in_(ids)))
+    c.execute(delete(db.comparisons).where(db.comparisons.c.discussion_id.in_(ids)))
     c.execute(delete(db.chat).where(db.chat.c.discussion_id.in_(ids)))
     c.execute(delete(db.discussions).where(db.discussions.c.sender == sender))
     c.execute(delete(db.facts).where(db.facts.c.sender == sender))
@@ -180,6 +194,9 @@ def dispatch(c, discussion, config, forecast, now):
     from .service import enqueue
 
     snapshot = context(c, discussion)
+    snapshot["validation_feedback"] = c.execute(
+        select(db.state.c.value).where(db.state.c.key == "reply-repair:" + discussion["id"])
+    ).scalar()
     snapshot["weather"] = forecast
     evidence = {}
     for job in c.execute(
@@ -200,7 +217,21 @@ def dispatch(c, discussion, config, forecast, now):
             .where(db.tools.c.discussion_id == discussion["id"])
         ).scalar(),
     )
-    snapshot["family_preferences"] = [dict(p) for p in c.execute(select(db.preferences)).mappings()]
+    from .family import preferences
+
+    snapshot["family_preferences"] = preferences(c)
+    snapshot["image_count"] = len(json.loads(discussion.get("attachments_json") or "[]"))
+    snapshot["pending_confirmations"] = [
+        dict(x)
+        for x in c.execute(
+            select(db.confirmations).where(
+                db.confirmations.c.status == "pending",
+                db.confirmations.c.expires_at > now,
+                (db.confirmations.c.sender == discussion["sender"])
+                | (db.confirmations.c.confirmer == discussion["sender"]),
+            )
+        ).mappings()
+    ]
     snapshot["current_time"] = datetime.fromtimestamp(now, ZoneInfo("Asia/Kolkata")).isoformat()
     snapshot["request_time"] = datetime.fromtimestamp(
         discussion.get("request_time") or discussion["created_at"], ZoneInfo("Asia/Kolkata")
@@ -229,7 +260,55 @@ def dispatch(c, discussion, config, forecast, now):
         now,
         room_id=config.work_room_id or config.room_id,
         related_id=discussion["id"],
+        media_json=json.dumps(
+            {
+                "source_room": config.room_id,
+                "forward": json.loads(discussion.get("attachments_json") or "[]"),
+            }
+        )
+        if discussion.get("attachments_json") and discussion["attachments_json"] != "[]"
+        else None,
     )
+
+
+def retry_schema_reply(c, message, now):
+    """One mechanical schema repair, never a way around factual validation."""
+    try:
+        value = json.loads(message.body)
+    except (ValueError, TypeError):
+        return False
+    if not isinstance(value, dict) or value.get("kind") != "trip_reply":
+        return False
+    current = (
+        c.execute(select(db.discussions).where(db.discussions.c.id == value.get("discussion_id")))
+        .mappings()
+        .first()
+    )
+    if (
+        not current
+        or current["status"] != "waiting"
+        or current["assignment_id"] != value.get("assignment_id")
+        or current["deadline"] < now
+    ):
+        return False
+    key = "reply-repair:" + current["id"]
+    if c.execute(select(db.state.c.key).where(db.state.c.key == key)).first():
+        return False
+    c.execute(
+        insert(db.state).values(
+            key=key,
+            value=(
+                "Your previous reply did not match the JSON schema. Return only supported fields. "
+                "Claims must use scalar values. Cite list elements such as /plans/0/places/0, "
+                "never an array. "
+                "Use exact assignment IDs and keep the ordinary reply short."
+            ),
+        )
+    )
+    c.execute(
+        update(db.discussions).where(db.discussions.c.id == current["id"]).values(status="queued")
+    )
+    return True
 
 
 def request_tool(c, request, now):

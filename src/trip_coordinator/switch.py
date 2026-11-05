@@ -1,6 +1,7 @@
 """Switch 0.40.1 documented SSE/HTTP agent protocol; no Telegram poller."""
 
 import asyncio
+import base64
 import json
 from contextlib import suppress
 from dataclasses import dataclass
@@ -49,6 +50,45 @@ async def parse_sse(lines):
 
 
 class SwitchClient:
+    async def upload_media(self, room_id, payload, caption):
+        from .media import MAX_BYTES, checked_image, validate_references
+
+        files = []
+        if payload.get("forward"):
+            validate_references(payload["forward"])
+            for index, reference in enumerate(payload["forward"]):
+                async with self.http.stream(
+                    "GET",
+                    f"{self.path}/rooms/{quote(payload['source_room'], safe='')}/media",
+                    params={"mxc": reference["mxc"]},
+                ) as response:
+                    response.raise_for_status()
+                    data = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        data.extend(chunk)
+                        if len(data) > MAX_BYTES:
+                            raise ValueError("Image exceeds the download limit")
+                files.append(
+                    (
+                        "files",
+                        (f"travel-image-{index + 1}.jpg", checked_image(bytes(data)), "image/jpeg"),
+                    )
+                )
+        else:
+            for item in payload.get("files", []):
+                content = base64.b64decode(item["base64"], validate=True)
+                if len(content) > MAX_BYTES:
+                    raise ValueError("Generated image exceeds the media limit")
+                files.append(("files", (item["filename"], content, item["mimetype"])))
+        if not 1 <= len(files) <= 2:
+            raise ValueError("A media message must contain one or two images")
+        response = await self.http.post(
+            f"{self.path}/rooms/{quote(room_id, safe='')}/media",
+            files=files,
+            data={"caption": caption},
+        )
+        response.raise_for_status()
+
     async def upload_calendar(self, room_id, content, caption):
         response = await self.http.post(
             f"{self.path}/rooms/{quote(room_id, safe='')}/media",

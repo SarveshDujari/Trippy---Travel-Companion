@@ -11,6 +11,7 @@ dependencies = [
     "alembic",
     "httpx",
     "tzdata",
+    "pillow>=13.0.0",
 ]
 
 [dependency-groups]

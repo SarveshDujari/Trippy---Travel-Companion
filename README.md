@@ -18,7 +18,18 @@ linked Telegram account's short-code approval, and all three simulator outcomes.
 - **Scoped decisions:** exact changes and cost deltas with short approval/rejection
   codes, verified sender identity and expiry checks.
 - **Family preferences:** reported member needs, evidence messages, importance,
-  hard/soft constraints and deterministic per-person comparison scores.
+  hard/soft constraints and deterministic per-person comparison scores. Natural
+  statements produce reviewable suggestions before a constraint is saved.
+- **Verified family directory:** stable member IDs, full display names and
+  reporter-scoped nicknames. Linked relatives confirm identity associations and
+  changes to their own constraints; reported companions remain explicitly unlinked.
+- **Image understanding:** the existing Planner reads travel screenshots and
+  ticket images through Switch. Extracted itinerary details require confirmation
+  and are stored separately from simulated reservation actions.
+- **Real outing comparison:** two options built from mapped places and walking
+  routes, with evidence, per-person scoring and explicit unknowns.
+- **Requested graphics:** ask for a visual plan to receive a locally generated PNG
+  comparison or itinerary schematic in Telegram.
 - **Selective tools:** weather, places and walking/driving routes requested on demand.
 - **Grounded output:** declared factual claims checked against saved tool results
   with generated source citations.
@@ -82,6 +93,9 @@ Ruff · Switch · Telegram
 
 Dependencies are pinned in `uv.lock`. The current integration uses managed Codex
 roles in Switch; the Coordinator does not call a model-provider API directly.
+Image input reuses that same signed-in Planner. Rendering uses Pillow locally.
+No separate paid model API account or API key is introduced by these features;
+the existing Codex account's usage limits still apply.
 
 ## Local setup
 
@@ -113,7 +127,8 @@ uv run python -m trip_coordinator trace
 uv run python scripts/crash_recovery_demo.py
 ```
 
-The comparison uses fictional candidate metrics. Calendar events are labelled
+The CLI `compare` utility is an offline fixture with fictional metrics. Conversational
+comparisons use the live `compare_plans` tool. Calendar events are labelled
 simulated. The crash demo uses a disposable database, terminates only its own
 child process mid-transaction, then verifies rollback and safe replay.
 
@@ -176,6 +191,9 @@ Explicit commands handle shared state and decisions:
 
 ```text
 trip help
+trip family
+trip visual
+trip approvals
 trip remember Dad max_walk_m 800 hard
 trip remember Mom vegetarian true hard
 trip remember Kids required_place Charminar soft
@@ -197,13 +215,44 @@ trip plan repair our delayed arrival
 
 Fatigue inputs mean metres walked, Celsius, stairs and travel minutes. They are
 reported estimates. Briefing times use **Asia/Kolkata** and require a running
-worker. Preference subjects currently use one token such as `Dad`; only the
-reporting sender can overwrite their structured preference.
+worker. Natural preferences and names can be stated directly:
+
+```text
+Call me Sarvesh
+I prefer vegetarian meals
+Dad must walk at most 800 metres
+Forget my walking limit
+Compare outings from Mecca Masjid, visiting Charminar, with Chowmahalla Palace
+as an optional extra stop, on 6 November 2026. Show the plan visually.
+```
+
+The bot proposes `yes P...` / `no P...` for preferences and `yes L...` / `no L...`
+for name/identity changes. These have a ten-minute expiry and cannot approve
+reservations. A linked person's preference requires that person's confirmation.
+Names can contain spaces. Nicknames such as Dad are scoped to their reporter;
+they do not prove who owns a Telegram account.
+
+Send a PNG, JPEG or WebP travel image (at most two, under 8 MB each). The bot
+labels the extraction as unconfirmed and proposes `yes I...` / `no I...` before
+saving ticket information. Unclear times, dates or timezones remain unknown.
+PDF interpretation is not implemented; send a screenshot instead. Image text
+cannot issue approval commands. The native `switch-media://` and Matrix `mxc://`
+attachment references are supported; arbitrary remote image URLs are rejected.
+
+To enroll another family member, first link their Telegram account in Switch.
+With the Coordinator stopped, run `scripts/enroll_family.py --list` using Switch's
+native Python environment, then `--enroll EXACT_VERIFIED_RECORD_ID`. The helper
+verifies the transport identity, reviews the binding and grants **no spending
+permission**. Restart the Coordinator, then use `trip family` and the confirmed
+nickname flow. The helper's read-only discovery was checked against the live setup.
 
 A proposal supplies its own code, such as `approve A1B2C3` or `reject A1B2C3`.
 A casual “yes” does not authorize changes. Generic Telegram inline approval
 callbacks are not exposed by the installed Switch messaging API, so this project
 implements the short-code fallback.
+Cards show original and proposed times, each cost delta, an absolute India-time
+expiry, and copyable decision commands. Original times are snapshotted when a
+proposal is created, so later itinerary updates cannot rewrite its history.
 
 `trip forget` clears the sender's local discussion memory and reported
 preferences. Booking/expense records, backups and external chat histories are
@@ -252,7 +301,7 @@ uv run python scripts/evaluate.py
 uv run python scripts/crash_recovery_demo.py
 ```
 
-Latest local verification: **106 passing tests**, a **30/30 deterministic workflow
+Latest local verification: **133 passing tests**, a **30/30 deterministic workflow
 scorecard**, and a passing process-crash exercise. The scorecard uses scripted
 inputs and mocked provider failures; it is not a live LLM-quality score. GitHub
 Actions runs the tests, style checks and crash exercise independently.
@@ -276,6 +325,13 @@ Live integration checks on November 5, 2026 also verified:
 - A replacement plan with explicit late-check-in and room-service alternatives.
 - Approval code received from the configured, linked Telegram member.
 - Three confirmed simulator actions and a final result delivered through Switch.
+- Travel-image reading through the same Planner, including a fictional ticket's
+  destination and departure time; no separate model API was used.
+- A name change proposed in ordinary conversation and confirmed by the actual
+  linked account.
+- Two sourced outing candidates and an on-request comparison PNG delivered
+  through Switch. Overpass was unavailable during this check; bounded geocoding
+  of the explicitly named extra attraction plus real walking routes succeeded.
 
 The first weather reply exposed a padded-date validation bug (`06` versus `6`).
 The validator now compares numeric values, regression tests cover the formatting
@@ -284,16 +340,21 @@ case, and the live retry passed. No real supplier reservation or payment was mad
 ## Current boundaries
 
 - No real airline-status integration, ticket purchases or supplier reservations.
-- Conflict scoring uses demo candidates; automatically constructing two fully
-  evidence-backed real itineraries remains future work.
+- The comparison builds bounded outings, not a complete optimized multi-day tour.
+  Routed walking excludes unknown movement inside venues. Missing hard-constraint
+  evidence blocks feasibility rather than being silently guessed.
 - Fatigue is a planning heuristic, not a medical assessment or an automatically
   verified aggregate of every itinerary leg.
 - Field-level checks validate declared tool facts. They cannot prove every
   free-form sentence is true or that the model selected the correct date.
 - Raw OSM accessibility, dietary and opening-hour tags may be missing/outdated.
   Missing facts remain unknown; walking failures never become driving estimates.
-- Structured memory corrections use commands; conversation does not silently
-  rewrite shared constraints.
+- Natural memory corrections require an exact, actor-scoped confirmation;
+  conversation does not silently rewrite shared constraints.
+- Image extraction is model interpretation, not supplier verification. Reviewed
+  imports are informational records and cannot execute bookings or payments.
+- Visuals are schematic plan cards, not geographic maps. A failed comparison
+  does not produce an unrelated demo plan as its requested graphic.
 - Expenses record reported costs and equal splits; no money moves.
 - Local briefings require an online worker. Automated tests cover family utility
   commands; this does not imply every utility has been exercised by a real family.

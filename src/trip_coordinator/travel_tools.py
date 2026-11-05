@@ -15,14 +15,17 @@ _last_geocode = 0.0
 
 
 def validate_request(name, arguments):
-    if name not in {"weather", "places", "route"} or not isinstance(arguments, dict):
+    if name not in {"weather", "places", "route", "compare_plans"} or not isinstance(
+        arguments, dict
+    ):
         raise ValueError("Unsupported tool request")
     if len(json.dumps(arguments)) > 1000:
         raise ValueError("Tool arguments too large")
     allowed = {
         "weather": {"location"},
-        "places": {"query", "category"},
+        "places": {"query", "category", "enrich"},
         "route": {"start", "end", "mode"},
+        "compare_plans": {"origin", "anchor", "date", "alternative"},
     }[name]
     if set(arguments) - allowed:
         raise ValueError("Unknown tool arguments")
@@ -40,22 +43,43 @@ def validate_request(name, arguments):
         ) not in {"walking", "driving"}:
             raise ValueError("Unsupported routing mode")
     if name == "places":
+        if type(arguments.get("enrich", True)) is not bool:
+            raise ValueError("Place enrichment must be true or false")
         if not isinstance(arguments.get("category", "attractions"), str) or arguments.get(
             "category", "attractions"
-        ) not in {"attractions", "vegetarian", "halal"}:
+        ) not in {"attractions", "vegetarian", "halal", "family"}:
             raise ValueError("Unsupported place category")
         if not isinstance(arguments.get("query"), str) or not 1 <= len(arguments["query"]) <= 120:
             raise ValueError("A short place query is required")
     if name == "weather" and not isinstance(arguments.get("location", "Hyderabad"), str):
         raise ValueError("Weather location must be text")
+    if name == "compare_plans":
+        from datetime import date
+
+        for key in ["origin", "anchor"]:
+            if not isinstance(arguments.get(key), str) or not 1 <= len(arguments[key]) <= 120:
+                raise ValueError("A real starting place and anchor attraction are required")
+        if "alternative" in arguments and (
+            not isinstance(arguments["alternative"], str)
+            or not 1 <= len(arguments["alternative"]) <= 120
+        ):
+            raise ValueError("Alternative place query must be short text")
+        try:
+            date.fromisoformat(arguments.get("date", ""))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Comparison date must be YYYY-MM-DD") from exc
     return arguments
 
 
-async def execute(engine, client, name, arguments):
+async def execute(engine, client, name, arguments, *, discussion_id=None):
     from .service import Coordinator
     from .weather import forecast
 
     validate_request(name, arguments)
+    if name == "compare_plans":
+        from .comparison import compare
+
+        return await compare(engine, client, arguments, discussion_id=discussion_id)
     now = int(time.time())
     source = {
         "weather": "https://open-meteo.com/",
@@ -68,6 +92,11 @@ async def execute(engine, client, name, arguments):
     if cached:
         value = json.loads(cached)
         ttl = (900 if name == "weather" else 86400) if value["status"] == "available" else 60
+        if (
+            name == "places"
+            and value.get("data", {}).get("nearby_status") == "unavailable_or_empty"
+        ):
+            ttl = 60
         if 0 <= now - value["retrieved_at"] < ttl:
             return value
     try:
@@ -147,23 +176,58 @@ async def execute(engine, client, name, arguments):
                 "attractions": '["tourism"~"attraction|museum"]',
                 "vegetarian": '["amenity"="restaurant"]["diet:vegetarian"~"^(yes|only)$"]',
                 "halal": '["amenity"="restaurant"]["diet:halal"~"^(yes|only)$"]',
+                "family": "",
             }[category]
-            query = (
-                f"[out:json][timeout:10];nwr(around:1500,{lat},{lon}){selector};out center tags 12;"
-            )
+            if category == "family":
+                query = (
+                    f'[out:json][timeout:10];(nwr(around:1500,{lat},{lon})["tourism"~"attraction|museum"];'
+                    f'nwr(around:1500,{lat},{lon})["amenity"="restaurant"];);out center tags 20;'
+                )
+            else:
+                query = (
+                    f"[out:json][timeout:10];nwr(around:1500,{lat},{lon})"
+                    f"{selector};out center tags 12;"
+                )
             nearby = []
             try:
-                extra = await client.post(
-                    "https://overpass-api.de/api/interpreter", data={"data": query}
+                extra = (
+                    await client.post(
+                        os.getenv("TRIP_OVERPASS", "https://overpass-api.de/api/interpreter"),
+                        data={"data": query},
+                        headers={
+                            "User-Agent": "TrippyFamilyTravel/0.2 (+https://github.com/SarveshDujari/Trippy---Travel-Companion)",
+                            "Accept": "application/json",
+                        },
+                        timeout=8,
+                    )
+                    if arguments.get("enrich", True)
+                    else None
                 )
-                extra.raise_for_status()
+                if extra:
+                    extra.raise_for_status()
                 nearby = [
                     {
                         "name": e.get("tags", {}).get("name", "Unnamed place"),
                         "osm_url": f"https://www.openstreetmap.org/{e['type']}/{e['id']}",
-                        "tags": e.get("tags", {}),
+                        "tags": {
+                            k: str(v)[:200]
+                            for k, v in e.get("tags", {}).items()
+                            if k
+                            in {
+                                "name",
+                                "tourism",
+                                "amenity",
+                                "diet:vegetarian",
+                                "diet:halal",
+                                "wheelchair",
+                                "opening_hours",
+                                "seats",
+                            }
+                        },
+                        "latitude": e.get("lat", e.get("center", {}).get("lat")),
+                        "longitude": e.get("lon", e.get("center", {}).get("lon")),
                     }
-                    for e in extra.json().get("elements", [])[:12]
+                    for e in (extra.json().get("elements", [])[:20] if extra else [])
                 ]
             except Exception:
                 # Main geocoding evidence remains useful; missing enrichment is explicit.
@@ -176,7 +240,9 @@ async def execute(engine, client, name, arguments):
                 "wheelchair": tags.get("wheelchair", "unknown"),
                 "seating": tags.get("seats", "unknown"),
                 "nearby": nearby,
-                "nearby_status": "available" if nearby else "unavailable_or_empty",
+                "nearby_status": ("available" if nearby else "unavailable_or_empty")
+                if arguments.get("enrich", True)
+                else "not_requested",
                 "note": (
                     "OSM tags are mapped claims, not a guarantee; "
                     "confirm important accessibility needs."

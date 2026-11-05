@@ -91,6 +91,7 @@ outbox = Table(
     "outbox",
     metadata,
     Column("attachment_text", Text),
+    Column("media_json", Text),
     Column("id", Integer, primary_key=True),
     Column("dedupe_key", String, unique=True, nullable=False),
     Column("body", Text, nullable=False),
@@ -115,6 +116,7 @@ discussions = Table(
     Column("created_at", Integer, nullable=False),
     Column("context", Text),
     Column("request_time", Integer),
+    Column("attachments_json", Text),
 )
 chat = Table(
     "chat_messages",
@@ -191,6 +193,62 @@ tools = Table(
     Column("status", String, nullable=False),
     Column("result", Text),
     Column("created_at", Integer, nullable=False),
+)
+
+
+family = Table(
+    "family_members",
+    metadata,
+    Column("id", String, primary_key=True),
+    Column("participant_id", String, unique=True),
+    Column("name", String, nullable=False),
+    Column("created_by", String, nullable=False),
+    Column("created_at", Integer, nullable=False),
+)
+aliases = Table(
+    "member_aliases",
+    metadata,
+    Column("owner", String, primary_key=True),
+    Column("alias", String, primary_key=True),
+    Column("member_id", ForeignKey("family_members.id"), nullable=False),
+)
+confirmations = Table(
+    "confirmations",
+    metadata,
+    Column("code", String, primary_key=True),
+    Column("kind", String, nullable=False),
+    Column("sender", String, nullable=False),
+    Column("confirmer", String, nullable=False),
+    Column("message_id", String, nullable=False),
+    Column("payload", Text, nullable=False),
+    Column("status", String, nullable=False),
+    Column("expires_at", Integer, nullable=False),
+    Column("created_at", Integer, nullable=False),
+    Column("decided_at", Integer),
+)
+comparisons = Table(
+    "plan_comparisons",
+    metadata,
+    Column("id", String, primary_key=True),
+    Column("discussion_id", ForeignKey("discussions.id")),
+    Column("sender", String, nullable=False),
+    Column("body", Text, nullable=False),
+    Column("created_at", Integer, nullable=False),
+)
+imported = Table(
+    "imported_itinerary",
+    metadata,
+    Column("id", String, primary_key=True),
+    Column("confirmation_code", ForeignKey("confirmations.code"), nullable=False),
+    Column("title", String, nullable=False),
+    Column("kind", String, nullable=False),
+    Column("start", String),
+    Column("end", String),
+    Column("location", String),
+    Column("reference", String),
+    Column("reported_by", String, nullable=False),
+    Column("source_message_id", String, nullable=False),
+    Column("status", String, nullable=False),
 )
 
 

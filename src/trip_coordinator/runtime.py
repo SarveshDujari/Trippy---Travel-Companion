@@ -119,7 +119,11 @@ async def dispatch_once(engine, client, room_id, now=None):
     try:
         # Stable reference allows humans/agents to recognize an uncertain resend.
         suffix = f"\n[ref:{item['dedupe_key']}]" if item["show_reference"] else ""
-        if item.get("attachment_text"):
+        if item.get("media_json"):
+            await client.upload_media(
+                item["room_id"] or room_id, json.loads(item["media_json"]), item["body"]
+            )
+        elif item.get("attachment_text"):
             await client.upload_calendar(
                 item["room_id"] or room_id, item["attachment_text"], item["body"]
             )
@@ -136,6 +140,8 @@ async def dispatch_once(engine, client, room_id, now=None):
             status, error = "unknown", "Switch response did not establish delivery"
     except httpx.TransportError:
         status, error = "unknown", "Delivery outcome uncertain; inspect room before retry"
+    except ValueError:
+        status, error = "failed", "Image could not be validated or delivered"
     if status == "pending":
         status = "failed" if item["attempts"] + 1 >= 5 else "pending"
         retry = now + min(60, 2 ** (item["attempts"] + 1))
@@ -146,6 +152,20 @@ async def dispatch_once(engine, client, room_id, now=None):
             .where(db.outbox.c.status == "sending")
             .values(status=status, next_attempt=retry, last_error=error)
         )
+        if status == "failed" and item.get("media_json") and item.get("related_id"):
+            c.execute(
+                update(db.discussions)
+                .where(db.discussions.c.id == item["related_id"])
+                .values(status="failed")
+            )
+            enqueue(
+                c,
+                item["dedupe_key"] + ":media-failed",
+                "I couldn't inspect that image. "
+                "Please send a smaller, clear PNG or JPEG screenshot.",
+                now,
+                show_reference=False,
+            )
 
 
 async def run(engine, config, key):
@@ -237,8 +257,14 @@ async def run(engine, config, key):
             c.execute(update(db.tools).where(db.tools.c.id == job["id"]).values(status="running"))
         async with httpx.AsyncClient(timeout=12, follow_redirects=False, trust_env=False) as http:
             try:
-                async with asyncio.timeout(25):
-                    result = await execute(engine, http, job["name"], json.loads(job["arguments"]))
+                async with asyncio.timeout(90 if job["name"] == "compare_plans" else 25):
+                    result = await execute(
+                        engine,
+                        http,
+                        job["name"],
+                        json.loads(job["arguments"]),
+                        discussion_id=job["discussion_id"],
+                    )
             except TimeoutError:
                 result = {
                     "status": "unavailable",

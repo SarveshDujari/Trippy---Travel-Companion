@@ -6,7 +6,10 @@ from decimal import Decimal
 
 def numbers(value):
     """Compare numerical values, allowing ISO date padding and trailing zeroes."""
-    return {Decimal(token) for token in re.findall(r"\d+(?:\.\d+)?", str(value))}
+    return {
+        Decimal(token.replace(",", ""))
+        for token in re.findall(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?", str(value))
+    }
 
 
 def value_at(data, pointer):
@@ -31,6 +34,10 @@ def verify(reply, snapshot, request):
             },
         )
     rendered, allowed = [], numbers(request)
+    if reply.image is not None:
+        if not snapshot.get("image_count"):
+            raise ValueError("An image interpretation requires an attached image")
+        allowed.update(numbers(reply.image.model_dump_json()))
     for claim in reply.claims:
         source = evidence.get(claim.source_id)
         if not source or source["status"] != "available":
@@ -50,10 +57,18 @@ def verify(reply, snapshot, request):
         if isinstance(actual, dict | list) or actual == "unknown":
             raise ValueError("Unknown or compound values cannot be verified claims")
         allowed.update(numbers(actual))
-        rendered.append(
-            f"{claim.field.split('/')[-1].replace('_', ' ')}: {actual} "
-            f"[source: {source['source_url']}]"
-        )
+        parts = claim.field.split("/")
+        field = parts[-2] if parts[-1].isdigit() and len(parts) > 2 else parts[-1]
+        label = {
+            "places": "Place",
+            "walking_m": "Mapped walking (m)",
+            "distance_m": "Route distance (m)",
+            "travel_minutes": "Estimated route time (min)",
+            "duration_minutes": "Estimated route time (min)",
+        }.get(field, field.replace("_", " "))
+        citation = f"{label}: {actual} [source: {source['source_url']}]"
+        if citation not in rendered:
+            rendered.append(citation)
     if reply.uses_weather and not any(
         c.source_id == "weather"
         or "open-meteo" in evidence.get(c.source_id, {}).get("source_url", "")

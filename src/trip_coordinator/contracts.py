@@ -75,6 +75,10 @@ class DiscussionReply(StrictModel):
     facts: list[TravelFact] = Field(default_factory=list, max_length=9)
     uses_weather: bool = False
     claims: list["EvidenceClaim"] = Field(default_factory=list, max_length=12)
+    preferences: list["PreferenceDraft"] = Field(default_factory=list, max_length=4)
+    member_action: "MemberDraft | None" = None
+    image: "ImageReading | None" = None
+    visual_plan: bool = False
 
 
 class EvidenceClaim(StrictModel):
@@ -87,8 +91,57 @@ class ToolRequest(StrictModel):
     kind: Literal["trip_tool_request"]
     discussion_id: str
     assignment_id: str
-    tool: Literal["weather", "places", "route"]
+    tool: Literal["weather", "places", "route", "compare_plans"]
     arguments: dict = Field(default_factory=dict)
+
+
+class PreferenceDraft(StrictModel):
+    subject: str = Field(min_length=1, max_length=100)
+    kind: Literal[
+        "max_walk_m",
+        "fatigue_limit",
+        "vegetarian",
+        "halal",
+        "required_place",
+        "wheelchair",
+        "senior",
+    ]
+    value: str | int | bool
+    hard: bool = True
+    strength: int = Field(default=3, ge=1, le=5)
+    evidence: str = Field(min_length=1, max_length=500)
+    operation: Literal["set", "remove"] = "set"
+
+
+class MemberDraft(StrictModel):
+    action: Literal["rename_self", "link_alias"]
+    name: str = Field(min_length=1, max_length=80)
+    member_id: str | None = None
+    evidence: str = Field(min_length=1, max_length=500)
+
+
+class ImportItem(StrictModel):
+    title: str = Field(min_length=1, max_length=120)
+    kind: Literal["flight", "train", "hotel", "activity", "transfer", "other"]
+    start: datetime | None = None
+    end: datetime | None = None
+    location: str | None = Field(default=None, max_length=200)
+    reference: str | None = Field(default=None, max_length=80)
+
+    @model_validator(mode="after")
+    def valid_times(self):
+        if any(x is not None and x.tzinfo is None for x in [self.start, self.end]):
+            raise ValueError("Image itinerary times require an explicit timezone")
+        if self.start and self.end and self.end <= self.start:
+            raise ValueError("Arrival/end must be after departure/start")
+        return self
+
+
+class ImageReading(StrictModel):
+    summary: str = Field(min_length=1, max_length=1000)
+    extracted_text: str = Field(default="", max_length=4000)
+    uncertainties: list[str] = Field(default_factory=list, max_length=12)
+    itinerary: list[ImportItem] = Field(default_factory=list, max_length=8)
 
 
 DiscussionReply.model_rebuild()

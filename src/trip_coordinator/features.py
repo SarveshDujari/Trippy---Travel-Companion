@@ -38,6 +38,15 @@ def set_preference(
         raise ValueError("Preference must be true or false")
     elif kind == "required_place" and (not isinstance(value, str) or len(value) > 120):
         raise ValueError("Invalid required place")
+    from .family import _reported_member, resolve
+
+    member = resolve(c, author, "me" if subject == author else subject)
+    if member:
+        if member["participant_id"] and member["participant_id"] != author:
+            raise ValueError("Only that linked member can confirm their preference")
+        subject = member["id"]
+    else:
+        subject = _reported_member(c, author, subject, now)
     prior = (
         c.execute(
             select(db.preferences).where(
@@ -94,7 +103,7 @@ def fatigue(walking_m, heat_c, stairs, travel_minutes):
     )
     return {
         "score": score,
-        "bar": "█" * (score // 10) + "░" * (10 - score // 10),
+        "bar": "â–ˆ" * (score // 10) + "â–‘" * (10 - score // 10),
         "label": "Planning comfort heuristic, not a medical or safety assessment",
     }
 
@@ -114,7 +123,15 @@ def rank_plans(plans, preferences):
         }
         if required - set(plan):
             raise ValueError("Plan lacks constraint evidence")
-        meter = fatigue(plan["walking_m"], plan["heat_c"], plan["stairs"], plan["travel_minutes"])
+        meter = (
+            fatigue(plan["walking_m"], plan["heat_c"], plan["stairs"], plan["travel_minutes"])
+            if all(plan[k] is not None for k in ["walking_m", "heat_c", "stairs", "travel_minutes"])
+            else {
+                "score": None,
+                "bar": "unknown",
+                "label": "Insufficient evidence for comfort score",
+            }
+        )
         scores, blockers, unknowns = {}, [], []
         for pref in preferences:
             subject, kind, target = pref["subject"], pref["kind"], json.loads(pref["value"])
@@ -125,10 +142,10 @@ def rank_plans(plans, preferences):
                 "halal": plan["halal"],
                 "wheelchair": plan["wheelchair"],
                 "required_place": plan["places"],
-                "senior": meter["score"] <= 40,
+                "senior": meter["score"] <= 40 if meter["score"] is not None else None,
             }.get(kind)
             passed = (
-                actual <= target
+                actual is not None and actual <= target
                 if kind in {"max_walk_m", "fatigue_limit"}
                 else target.casefold() in [x.casefold() for x in actual]
                 if kind == "required_place"
@@ -137,6 +154,14 @@ def rank_plans(plans, preferences):
             if actual is None:
                 unknowns.append(subject + ": " + kind)
                 passed = False
+            if (
+                kind == "max_walk_m"
+                and plan.get("onsite_walking_unknown")
+                and passed
+                and pref["hard"]
+            ):
+                passed = False
+                unknowns.append(subject + ": on-site walking is unknown")
             if kind in {"vegetarian", "halal", "wheelchair", "senior"} and target is False:
                 passed = True  # False disables a requirement; it does not require the opposite.
             scores.setdefault(subject, {"earned": 0, "possible": 0})
@@ -161,7 +186,9 @@ def rank_plans(plans, preferences):
 def demo_conflict(c):
     # Explicitly fictional route metrics. Live tool results must replace these
     # before a plan is presented as a verified real itinerary.
-    prefs = [dict(p) for p in c.execute(select(db.preferences)).mappings()]
+    from .family import preferences
+
+    prefs = preferences(c)
     if not prefs:
         prefs = [
             {"subject": "Dad", "kind": "max_walk_m", "value": "800", "hard": True, "strength": 5},
@@ -295,7 +322,7 @@ def trigger_delay(c, config, event_id, minutes, now):
     from .service import TRIP, Coordinator, enqueue, planning_context, row
 
     if not re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", event_id) or not 1 <= minutes <= 360:
-        raise ValueError("Use a stable event ID and a delay of 1–360 minutes")
+        raise ValueError("Use a stable event ID and a delay of 1â€“360 minutes")
     existing = c.execute(select(db.events).where(db.events.c.id == event_id)).mappings().first()
     payload = json.dumps(
         {"minutes": minutes, "source": "SIMULATED flight-status event"}, sort_keys=True
@@ -365,6 +392,10 @@ def chat_command(c, command, message, now):
 
     if command == "help":
         return (
+            "Tell me preferences naturally, e.g. 'I prefer vegetarian food', "
+            "and confirm the suggestion.\n"
+            "Send a travel image for review, or ask 'Show my plan as a visual'.\n"
+            "trip family / trip visual / trip approvals\n"
             "Travel tools:\ntrip remember Dad max_walk_m 800 hard\n"
             "trip remember Mom vegetarian true hard\ntrip memory\n"
             "trip forget preference Dad max_walk_m\ntrip compare\n"
@@ -375,7 +406,9 @@ def chat_command(c, command, message, now):
             "Approve/reject a proposal using its exact short code."
         )
     if command == "memory":
-        prefs = [dict(p) for p in c.execute(select(db.preferences)).mappings()]
+        from .family import preferences
+
+        prefs = preferences(c)
         facts = [
             dict(p)
             for p in c.execute(
@@ -419,17 +452,34 @@ def chat_command(c, command, message, now):
         parts = command.split()
         if len(parts) != 4:
             raise ValueError("Use: trip forget preference Dad max_walk_m")
+        from .family import resolve
+
+        target = resolve(c, message.sender, parts[2])
+        subject = target["id"] if target else parts[2]
         count = c.execute(
             delete(db.preferences).where(
-                db.preferences.c.subject == parts[2],
+                db.preferences.c.subject == subject,
                 db.preferences.c.kind == parts[3],
                 db.preferences.c.author == message.sender,
             )
         ).rowcount
         return f"Removed {count} preference(s) reported by you."
     if command == "compare":
-        return "Fictional comparison, not verified route/restaurant data:\n" + json.dumps(
-            demo_conflict(c), ensure_ascii=False
+        from .comparison import card
+
+        latest = (
+            c.execute(select(db.comparisons).order_by(db.comparisons.c.created_at.desc()).limit(1))
+            .mappings()
+            .first()
+        )
+        return (
+            card(json.loads(latest["body"]))
+            if latest
+            else (
+                "Tell me your starting place, main attraction and date. "
+                "For example: Compare outings from my hotel near Charminar, "
+                "visiting Charminar, on 6 November 2026."
+            )
         )
     if command.startswith("fatigue "):
         try:
@@ -509,14 +559,14 @@ async def maybe_briefing(engine, config, weather_data, now):
             for x in c.execute(select(db.items)).mappings()
             if datetime.fromisoformat(x["start"]).date() == local.date()
         ]
-        body = "Morning briefing — Hyderabad\n"
+        body = "Morning briefing â€” Hyderabad\n"
         if weather_data.get("status") == "available":
             day = next(
                 (d for d in weather_data["daily"] if d["date"] == local.date().isoformat()), None
             )
             if day:
                 body += (
-                    f"Forecast: {day['temperature_2m_min']}–{day['temperature_2m_max']} C; "
+                    f"Forecast: {day['temperature_2m_min']}â€“{day['temperature_2m_max']} C; "
                     f"rain chance {day['precipitation_probability_max']}%. "
                     "Source: Open-Meteo (https://open-meteo.com/).\n"
                 )

@@ -57,6 +57,7 @@ def enqueue(
     show_reference=True,
     related_id=None,
     attachment_text=None,
+    media_json=None,
 ):
     connection.execute(
         insert(db.outbox).values(
@@ -69,6 +70,7 @@ def enqueue(
             show_reference=show_reference,
             related_id=related_id,
             attachment_text=attachment_text,
+            media_json=media_json,
         )
     )
 
@@ -183,6 +185,11 @@ class Coordinator:
     def __init__(self, engine, config: RuntimeConfig, clock=time.time):
         self.engine, self.config, self.clock = engine, config, clock
         self.members = {m.participant_id: m for m in config.members}
+        if engine is not None:
+            from .family import sync_members
+
+            with engine.begin() as c:
+                sync_members(c, config, int(clock()))
 
     def consume(self, envelope):
         """Only call with frames received over the authenticated Switch connection."""
@@ -228,8 +235,15 @@ class Coordinator:
                         reason = (
                             str(exc) if isinstance(exc, Rejected) else "Invalid agent result format"
                         )
-                        enqueue(c, key + ":rejected", f"Request not applied: {reason}.", now)
-                        outcome = "rejected"
+                        if (
+                            isinstance(exc, ValidationError)
+                            and message.sender == self.config.planner_participant_id
+                            and discussion.retry_schema_reply(c, message, now)
+                        ):
+                            outcome = "retrying_agent_reply_schema"
+                        else:
+                            enqueue(c, key + ":rejected", f"Request not applied: {reason}.", now)
+                            outcome = "rejected"
                     c.execute(update(db.inbox).where(db.inbox.c.id == key).values(outcome=outcome))
             sequence = envelope.get("sequence")
             if isinstance(sequence, int):
@@ -266,9 +280,35 @@ class Coordinator:
                         return "ignored_stale_discussion"
                     text_reply = reply.reply
                     saved = row(c, db.discussions, reply.discussion_id)
+                    from .family import propose_import, propose_member, propose_preference
+
+                    try:
+                        additions = [
+                            propose_preference(c, draft, saved, now) for draft in reply.preferences
+                        ]
+                        if reply.member_action:
+                            additions.append(propose_member(c, reply.member_action, saved, now))
+                        if reply.image:
+                            text_reply = (
+                                "From your image — unconfirmed, please check:\n" + text_reply
+                            )
+                            imported = propose_import(c, reply.image, saved, now)
+                            if imported:
+                                additions.append(imported)
+                        if additions:
+                            text_reply += "\n\n" + "\n\n".join(additions)
+                    except ValueError as exc:
+                        raise Rejected(str(exc)) from exc
                     citations = verify(reply, json.loads(saved["context"]), saved["request"])
                     if citations:
                         text_reply += "\n" + citations
+                    from .comparison import card
+
+                    for evidence in json.loads(saved["context"]).get("evidence", {}).values():
+                        if evidence.get(
+                            "status"
+                        ) == "available" and "comparison_id" in evidence.get("data", {}):
+                            text_reply += "\n\n" + card(evidence["data"])
                     if reply.uses_weather:
                         saved = row(c, db.discussions, reply.discussion_id)
                         weather_data = json.loads(saved["context"])["weather"]
@@ -285,6 +325,34 @@ class Coordinator:
                         show_reference=False,
                         related_id=reply.discussion_id,
                     )
+                    if reply.visual_plan:
+                        from .media import render_plan, visual_requested
+
+                        attempted = c.execute(
+                            select(db.tools.c.id).where(
+                                db.tools.c.discussion_id == reply.discussion_id,
+                                db.tools.c.name == "compare_plans",
+                            )
+                        ).first()
+                        comparison_id = next(
+                            (
+                                e["data"]["comparison_id"]
+                                for e in json.loads(saved["context"]).get("evidence", {}).values()
+                                if e.get("status") == "available"
+                                and "comparison_id" in e.get("data", {})
+                            ),
+                            None,
+                        )
+                        if visual_requested(saved["request"]) and (not attempted or comparison_id):
+                            enqueue(
+                                c,
+                                reply.discussion_id + ":visual",
+                                "Your plan at a glance. Estimates and unknowns are labelled.",
+                                now,
+                                show_reference=False,
+                                media_json=json.dumps(render_plan(c, comparison_id=comparison_id)),
+                                related_id=reply.discussion_id,
+                            )
                     return "discussion_reply"
                 self._plan(c, PlanResult.model_validate_json(message.body), now)
                 return "plan_received"
@@ -302,6 +370,26 @@ class Coordinator:
         # Old/replayed human commands cannot approve or mutate current state.
         if abs(now - message.timestamp / 1000) > 120:
             raise Rejected("Command is older than two minutes; send a fresh command")
+        from .family import command as family_command
+
+        try:
+            answer = family_command(c, message.body, message.sender, message.message_id, now)
+        except ValueError as exc:
+            raise Rejected(str(exc)) from exc
+        if answer:
+            enqueue(c, message.message_id + ":family", answer, now, show_reference=False)
+            return "family_command"
+        if message.body.strip().lower() in {
+            "trip approvals",
+            "show pending approvals",
+            "show the proposal",
+        }:
+            from .approvals import pending
+
+            enqueue(
+                c, message.message_id + ":approvals", pending(c, now), now, show_reference=False
+            )
+            return "approval_status"
         short = re.fullmatch(
             r"(approve|reject) ([A-Fa-f0-9]{6}|proposal_[0-9a-f]{12})", message.body.strip()
         )
@@ -316,6 +404,18 @@ class Coordinator:
         if not message.body.startswith("trip "):
             return self._discuss(c, message, now)
         command = message.body[5:].strip()
+        if command in {"visual", "timeline", "map"}:
+            from .media import render_plan
+
+            enqueue(
+                c,
+                message.message_id + ":visual",
+                "Your plan at a glance — schematic, not a geographic map.",
+                now,
+                show_reference=False,
+                media_json=json.dumps(render_plan(c)),
+            )
+            return "visual_plan"
         if command == "calendar":
             from .features import calendar
 
@@ -371,14 +471,12 @@ class Coordinator:
         if not self.config.conversation_enabled:
             return "ignored"
         if message.attachments:
-            enqueue(
-                c,
-                message.message_id + ":attachment",
-                "I can read text messages for now. Please type the trip details "
-                "you want me to use, rather than sending a document or image.",
-                now,
-                show_reference=False,
-            )
+            from .media import validate_references
+
+            try:
+                validate_references(message.attachments)
+            except ValueError as exc:
+                raise Rejected(str(exc)) from exc
         result = discussion.queue(c, message, now)
         if result == "busy":
             enqueue(
@@ -453,19 +551,21 @@ class Coordinator:
             .where(db.tasks.c.id == result.task_id)
             .values(state="awaiting_approval", proposal_id=proposal, deadline=None)
         )
-        lines = ["SIMULATED reservation proposal", result.summary]
-        lines += [
-            f"{x.item_id}: {x.start.isoformat()}, +INR {x.extra_cost_minor / 100:.2f}"
-            + (" (late check-in)" if x.late_checkin else "")
-            + (" (room service replacement)" if x.alternative == "room_service" else "")
-            for x in result.changes
-        ]
-        lines += [
-            f"Total extra: INR {sum(x.extra_cost_minor for x in result.changes) / 100:.2f}",
-            f"Approve within {self.config.approval_ttl_seconds // 60} minutes: "
-            f"approve {code}\nOr decline: reject {code}\nFull reference: {proposal}",
-        ]
-        enqueue(c, proposal, "\n".join(lines), now)
+        before = {x.item_id: row(c, db.items, x.item_id)["start"] for x in result.changes}
+        c.execute(
+            insert(db.events).values(
+                id=proposal + ":before",
+                kind="proposal_snapshot",
+                payload=json.dumps(before),
+                status="recorded",
+                created_at=now,
+            )
+        )
+        from .approvals import card
+
+        enqueue(
+            c, proposal, card(c, row(c, db.proposals, proposal), now), now, show_reference=False
+        )
 
     def _approve(self, c, proposal_id, sender, now):
         proposal_id = self._resolve_proposal(c, proposal_id)

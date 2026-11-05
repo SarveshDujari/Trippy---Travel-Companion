@@ -24,6 +24,8 @@ from trip_coordinator.travel_tools import execute
         ("2026-11-06", "Tomorrow, 6 November.", True),
         ("2026-11-06", "Tomorrow, 7 November.", False),
         (29.0, "The forecast is 29 C.", True),
+        (1671, "The walking estimate is 1,671 metres.", True),
+        (1671, "The walking estimate is 1,670 metres.", False),
     ],
 )
 def test_grounding_accepts_equivalent_numeric_formatting_only(value, prose, accepted):
