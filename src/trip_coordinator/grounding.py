@@ -1,6 +1,12 @@
 """Validate declared factual claims against saved tool results."""
 
 import re
+from decimal import Decimal
+
+
+def numbers(value):
+    """Compare numerical values, allowing ISO date padding and trailing zeroes."""
+    return {Decimal(token) for token in re.findall(r"\d+(?:\.\d+)?", str(value))}
 
 
 def value_at(data, pointer):
@@ -24,7 +30,7 @@ def verify(reply, snapshot, request):
                 "source_url": "https://open-meteo.com/",
             },
         )
-    rendered, allowed = [], set(re.findall(r"\d+(?:\.\d+)?", request))
+    rendered, allowed = [], numbers(request)
     for claim in reply.claims:
         source = evidence.get(claim.source_id)
         if not source or source["status"] != "available":
@@ -43,7 +49,7 @@ def verify(reply, snapshot, request):
                 raise ValueError("Claim contradicts the tool result")
         if isinstance(actual, dict | list) or actual == "unknown":
             raise ValueError("Unknown or compound values cannot be verified claims")
-        allowed.update(re.findall(r"\d+(?:\.\d+)?", str(actual)))
+        allowed.update(numbers(actual))
         rendered.append(
             f"{claim.field.split('/')[-1].replace('_', ' ')}: {actual} "
             f"[source: {source['source_url']}]"
@@ -57,10 +63,10 @@ def verify(reply, snapshot, request):
     # Limit factual numbers to evidence or the user's own input. Relative dates
     # and party/budget numbers in stored personal statements are also permitted.
     for fact in snapshot.get("this_persons_explicit_trip_details", []):
-        allowed.update(re.findall(r"\d+(?:\.\d+)?", fact["value"]))
+        allowed.update(numbers(fact["value"]))
     for stamp in [snapshot.get("current_time", ""), snapshot.get("request_time", "")]:
-        allowed.update(re.findall(r"\d+(?:\.\d+)?", stamp))
-    if set(re.findall(r"\d+(?:\.\d+)?", reply.reply)) - allowed:
+        allowed.update(numbers(stamp))
+    if numbers(reply.reply) - allowed:
         raise ValueError("Numerical facts need evidence citations")
     if re.search(
         r"\b(?:I(?:'ve| have)|we have|successfully)\s+(?:booked|paid|reserved)\b", reply.reply, re.I

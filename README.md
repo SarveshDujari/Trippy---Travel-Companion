@@ -6,8 +6,9 @@ separate agent roles with a deterministic Python backend: the model proposes;
 application code validates; a linked family member approves reservation changes.
 
 **Status:** working prototype for Hyderabad. Reservation changes are simulated.
-Real purchases and payment processing are outside the project. The latest new
-Telegram flows still require live verification after reconnecting Switch.
+Real purchases and payment processing are outside the project. Live checks have
+verified sourced weather/place/walking replies, a simulated disruption, a real
+linked Telegram account's short-code approval, and all three simulator outcomes.
 
 ## Features
 
@@ -251,7 +252,7 @@ uv run python scripts/evaluate.py
 uv run python scripts/crash_recovery_demo.py
 ```
 
-Latest local verification: **103 passing tests**, a **30/30 deterministic workflow
+Latest local verification: **106 passing tests**, a **30/30 deterministic workflow
 scorecard**, and a passing process-crash exercise. The scorecard uses scripted
 inputs and mocked provider failures; it is not a live LLM-quality score. GitHub
 Actions runs the tests, style checks and crash exercise independently.
@@ -263,8 +264,22 @@ uv run python scripts/check_live_tools.py
 ```
 
 These make public requests and save results under `data/evaluation/`. The latest
-probe obtained place data and a walking route; weather was unavailable and stayed
-unknown. Availability can vary.
+standalone probe obtained place data and a walking route; weather was unavailable
+then. A subsequent live Telegram check successfully obtained the weather too.
+Availability can vary.
+
+Live integration checks on November 5, 2026 also verified:
+
+- Planner-requested weather, place and walking tools with field-level citations.
+- Calendar upload through Switch and acknowledged outgoing Telegram relays.
+- Authenticated simulated delay webhook and duplicate-event suppression.
+- A replacement plan with explicit late-check-in and room-service alternatives.
+- Approval code received from the configured, linked Telegram member.
+- Three confirmed simulator actions and a final result delivered through Switch.
+
+The first weather reply exposed a padded-date validation bug (`06` versus `6`).
+The validator now compares numeric values, regression tests cover the formatting
+case, and the live retry passed. No real supplier reservation or payment was made.
 
 ## Current boundaries
 
@@ -280,8 +295,8 @@ unknown. Availability can vary.
 - Structured memory corrections use commands; conversation does not silently
   rewrite shared constraints.
 - Expenses record reported costs and equal splits; no money moves.
-- Local briefings require an online worker. Recent Telegram/calendar features
-  still need live end-to-end verification.
+- Local briefings require an online worker. Automated tests cover family utility
+  commands; this does not imply every utility has been exercised by a real family.
 
 Nominatim requests are cached and rate limited. Respect its
 [usage policy](https://operations.osmfoundation.org/policies/nominatim/)

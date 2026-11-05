@@ -18,6 +18,41 @@ from trip_coordinator.switch import SwitchClient
 from trip_coordinator.travel_tools import execute
 
 
+@pytest.mark.parametrize(
+    "value,prose,accepted",
+    [
+        ("2026-11-06", "Tomorrow, 6 November.", True),
+        ("2026-11-06", "Tomorrow, 7 November.", False),
+        (29.0, "The forecast is 29 C.", True),
+    ],
+)
+def test_grounding_accepts_equivalent_numeric_formatting_only(value, prose, accepted):
+    from trip_coordinator.contracts import DiscussionReply
+    from trip_coordinator.grounding import verify
+
+    snapshot = {
+        "evidence": {
+            "checked": {
+                "status": "available",
+                "data": {"value": value},
+                "source_url": "https://open-meteo.com/",
+            }
+        }
+    }
+    reply = DiscussionReply(
+        kind="trip_reply",
+        discussion_id="test",
+        assignment_id="test",
+        reply=prose,
+        claims=[{"source_id": "checked", "field": "/value", "value": value}],
+    )
+    if accepted:
+        assert verify(reply, snapshot, "Check tomorrow")
+    else:
+        with pytest.raises(ValueError, match="Numerical facts"):
+            verify(reply, snapshot, "Check tomorrow")
+
+
 @pytest.mark.parametrize("allow_exceptions", [False, True])
 def test_two_hour_disruption_requires_explicit_simulated_alternatives(setup, allow_exceptions):
     from test_workflow import event
