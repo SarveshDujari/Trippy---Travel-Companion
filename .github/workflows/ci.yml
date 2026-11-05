@@ -1,0 +1,30 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install locked dependencies
+        run: |
+          python -m pip install uv
+          uv sync --locked
+      - name: Check code style
+        run: |
+          uv run ruff check .
+          uv run ruff format --check src tests scripts migrations
+      - name: Run isolated tests
+        run: uv run pytest -q
+      - name: Verify crash recovery
+        run: uv run python scripts/crash_recovery_demo.py

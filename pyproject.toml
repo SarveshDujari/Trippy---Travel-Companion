@@ -1,0 +1,39 @@
+[project]
+name = "family-trip-coordinator"
+version = "0.1.0"
+description = "Dependency-aware family travel coordination through Switch and Telegram"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "pydantic-settings",
+    "sqlalchemy",
+    "alembic",
+    "httpx",
+    "tzdata",
+]
+
+[dependency-groups]
+dev = ["pytest", "ruff"]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/trip_coordinator"]
+
+[project.scripts]
+trip-coordinator = "trip_coordinator.__main__:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+extend-exclude = [".cache", ".venv", "downloads"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

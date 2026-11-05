@@ -1,0 +1,19 @@
+{
+  "bridge_url": "http://127.0.0.1:8000",
+  "room_id": "REPLACE_WITH_SWITCH_TEST_ROOM_ID",
+  "bridge_id": "REPLACE_WITH_TELEGRAM_BRIDGE_ID",
+  "coordinator_agent_id": "REPLACE_WITH_CUSTOM_COORDINATOR_AGENT_ID",
+  "planner_participant_id": "REPLACE_WITH_PLANNER_OPAQUE_PARTICIPANT_ID",
+  "planner_name": "trip-planner",
+  "reservation_participant_id": "REPLACE_WITH_RESERVATION_OPAQUE_PARTICIPANT_ID",
+  "reservation_name": "trip-reservations",
+  "members": [
+    {"participant_id": "REPLACE_WITH_YOUR_LINKED_OPAQUE_PARTICIPANT_ID", "can_approve": true}
+  ],
+  "database_path": "data/trips.db",
+  "approval_ttl_seconds": 600,
+  "assignment_ttl_seconds": 300,
+  "weather_enabled": false,
+  "conversation_enabled": false,
+  "work_room_id": null
+}

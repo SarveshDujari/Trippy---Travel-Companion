@@ -1,0 +1,26 @@
+.venv/
+.cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.env
+.env.*
+data/
+logs/
+downloads/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite*
+config/*
+!config/runtime.example.json
+
+# Private development notes and evidence stay local.
+docs/
+PROJECT_PLAN.md
+*.log
+*.pem
+*.key
+.DS_Store
+Thumbs.db
