@@ -6,12 +6,26 @@ import math
 import os
 import time
 
+import httpx
 from sqlalchemy import select
 
 from . import storage as db
 
 _nominatim_lock = asyncio.Lock()
 _last_geocode = 0.0
+
+
+async def provider_get(client, url, **kwargs):
+    """One retry for a transient provider failure; never retry rate limits."""
+    for attempt in range(2):
+        try:
+            response = await client.get(url, **kwargs)
+            if response.status_code not in {502, 503, 504} or attempt:
+                return response
+        except httpx.TransportError:
+            if attempt:
+                raise
+        await asyncio.sleep(1.1)
 
 
 def validate_request(name, arguments):
@@ -98,6 +112,11 @@ async def execute(engine, client, name, arguments, *, discussion_id=None):
         ):
             ttl = 60
         if 0 <= now - value["retrieved_at"] < ttl:
+            value["cache"] = {
+                "hit": True,
+                "age_seconds": now - value["retrieved_at"],
+                "expires_at": value["retrieved_at"] + ttl,
+            }
             return value
     try:
         if name == "weather":
@@ -120,7 +139,8 @@ async def execute(engine, client, name, arguments, *, discussion_id=None):
             if not base.startswith("https://"):
                 raise ValueError("Routing endpoint must use HTTPS")
             points = ";".join(",".join(str(x) for x in arguments[k]) for k in ["start", "end"])
-            response = await client.get(
+            response = await provider_get(
+                client,
                 base.rstrip("/")
                 + "/route/v1/"
                 + ("foot" if mode == "walking" else "driving")
@@ -150,7 +170,8 @@ async def execute(engine, client, name, arguments, *, discussion_id=None):
             global _last_geocode
             async with _nominatim_lock:
                 await asyncio.sleep(max(0, 1.1 - (time.monotonic() - _last_geocode)))
-                response = await client.get(
+                response = await provider_get(
+                    client,
                     os.getenv("TRIP_NOMINATIM", "https://nominatim.openstreetmap.org/search"),
                     params={
                         "q": arguments["query"],

@@ -79,6 +79,9 @@ class DiscussionReply(StrictModel):
     member_action: "MemberDraft | None" = None
     image: "ImageReading | None" = None
     visual_plan: bool = False
+    assistant_action: (
+        Literal["family", "approvals", "calendar", "status", "propose_changes"] | None
+    ) = None
 
 
 class EvidenceClaim(StrictModel):

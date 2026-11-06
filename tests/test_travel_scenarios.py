@@ -243,7 +243,7 @@ def test_family_scenario(setup, scenario):
                 )
 
         asyncio.run(check())
-        assert len(calls) == 1 and "routed-foot" in calls[0]
+        assert len(calls) == 2 and all("routed-foot" in call for call in calls)
     elif scenario == "uncertain-send-no-replay":
         say("trip tips")
         calls = []

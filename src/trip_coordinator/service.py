@@ -302,6 +302,22 @@ class Coordinator:
                     citations = verify(reply, json.loads(saved["context"]), saved["request"])
                     if citations:
                         text_reply += "\n" + citations
+                    if reply.assistant_action:
+                        if reply.assistant_action == "propose_changes":
+                            # Routing can request a proposal, never authorize execution.
+                            self._start(c, saved["request"][:1000], now)
+                            text_reply += (
+                                "\nI'll prepare changes for your review. Nothing is booked."
+                            )
+                        else:
+                            # Reuse the same checked handlers as the optional shortcuts.
+                            original = Message(
+                                sender=saved["sender"],
+                                message_id=saved["message_id"] + ":assistant",
+                                body="trip " + reply.assistant_action,
+                                timestamp=int(now * 1000),
+                            )
+                            self._route(c, original, now)
                     from .comparison import card
 
                     for evidence in json.loads(saved["context"]).get("evidence", {}).values():

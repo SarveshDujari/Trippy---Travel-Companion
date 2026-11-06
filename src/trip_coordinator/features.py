@@ -132,6 +132,17 @@ def rank_plans(plans, preferences):
                 "label": "Insufficient evidence for comfort score",
             }
         )
+        meter["known_inputs"] = {
+            k: plan[k]
+            for k in ["walking_m", "heat_c", "stairs", "travel_minutes"]
+            if plan[k] is not None
+        }
+        meter["missing_inputs"] = [
+            k for k in ["walking_m", "heat_c", "stairs", "travel_minutes"] if plan[k] is None
+        ]
+        meter["onsite_walking_unknown"] = bool(plan.get("onsite_walking_unknown"))
+        if meter["onsite_walking_unknown"]:
+            meter["label"] += "; venue walking is excluded"
         scores, blockers, unknowns = {}, [], []
         for pref in preferences:
             subject, kind, target = pref["subject"], pref["kind"], json.loads(pref["value"])

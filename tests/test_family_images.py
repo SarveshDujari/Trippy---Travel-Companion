@@ -357,3 +357,42 @@ def test_approval_card_retains_original_times_after_itinerary_updates(setup):
         assert "Was: 06 Nov, 19:00 IST" in text
         assert "Proposed: 06 Nov, 21:00 IST" in text
         assert "TOTAL EXTRA: INR 500.00" in text
+
+
+def test_own_display_name_changes_without_confirmation(setup):
+    engine, _, now, _ = setup
+    config, current = pending(setup, "Call me Sarvesh")
+    service = Coordinator(engine, config, lambda: now[0])
+    response = private_reply(
+        now[0],
+        reply_for(
+            current,
+            member_action={
+                "action": "rename_self",
+                "name": "Sarvesh",
+                "evidence": "Call me Sarvesh",
+                "member_id": family.member_id("child"),
+            },
+        ),
+    )
+    service.consume(response)
+    members = {x["participant_id"]: x for x in get(engine, db.family)}
+    assert members["parent"]["name"] == "Sarvesh"
+    assert members["child"]["name"] != "Sarvesh"
+    assert not get(engine, db.confirmations)
+    service.consume(response)
+    assert not get(engine, db.confirmations)
+
+
+@pytest.mark.parametrize("action", ["family", "approvals", "status", "calendar", "propose_changes"])
+def test_natural_assistant_handoff_never_executes_bookings(setup, action):
+    engine, _, now, _ = setup
+    config, current = pending(setup, "Please help with our trip")
+    service = Coordinator(engine, config, lambda: now[0])
+    service.consume(private_reply(now[0], reply_for(current, assistant_action=action)))
+    assert not get(engine, db.actions)
+    assert not get(engine, db.confirmations)
+    if action == "propose_changes":
+        assert get(engine, db.tasks)[0]["state"] == "planning"
+    else:
+        assert any(":assistant:" in x["dedupe_key"] for x in get(engine, db.outbox))

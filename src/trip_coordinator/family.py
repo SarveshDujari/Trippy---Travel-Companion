@@ -180,6 +180,38 @@ def propose_preference(c, draft, current, now):
     code = _create(
         c, "preference", current["sender"], confirmer, current["message_id"], payload, now
     )
+    # Clear soft preferences owned by the sender are reversible without a ceremony.
+    if target and target["participant_id"] == current["sender"] and not draft.hard:
+        decide(c, code, current["sender"], True, now)
+        key = "undo-memory:" + code
+        after = (
+            c.execute(
+                select(db.preferences).where(
+                    db.preferences.c.subject == subject, db.preferences.c.kind == draft.kind
+                )
+            )
+            .mappings()
+            .first()
+        )
+        c.execute(
+            insert(db.state).values(
+                key=key,
+                value=json.dumps(
+                    {
+                        "sender": current["sender"],
+                        "subject": subject,
+                        "kind": draft.kind,
+                        "before": dict(prior) if prior else None,
+                        "after": dict(after) if after else None,
+                        "expires_at": now + 600,
+                    }
+                ),
+            )
+        )
+        return (
+            f"Updated your {draft.kind.replace('_', ' ')} preference. "
+            f"Undo: undo {code} (10 minutes)."
+        )
     name = target["name"] if target else draft.subject
     if not target or not target["participant_id"]:
         name += " (reported companion; not Telegram-linked)"
@@ -222,6 +254,12 @@ def propose_member(c, draft, current, now):
         target = resolve(c, current["sender"], "me")
         if not target:
             raise ValueError("This account has not been enrolled in the family directory")
+        c.execute(
+            update(db.family)
+            .where(db.family.c.id == target["id"], db.family.c.participant_id == current["sender"])
+            .values(name=draft.name)
+        )
+        return f"Got it — I'll call you {draft.name}."
     else:
         target = resolve(c, current["sender"], draft.member_id or "")
         if not target or not target["participant_id"]:
@@ -435,6 +473,35 @@ def decide(c, code, sender, accept, now):
 
 
 def command(c, text, sender, message_id, now):
+    undo = re.fullmatch(r"undo\s+(P[A-Fa-f0-9]{6})", text.strip(), re.I)
+    if undo:
+        key = "undo-memory:" + undo[1].upper()
+        raw = c.execute(select(db.state.c.value).where(db.state.c.key == key)).scalar()
+        entry = json.loads(raw) if raw else None
+        if not entry or entry["sender"] != sender or entry["expires_at"] <= now:
+            raise ValueError("That undo is unavailable for your account or has expired")
+        current = (
+            c.execute(
+                select(db.preferences).where(
+                    db.preferences.c.subject == entry["subject"],
+                    db.preferences.c.kind == entry["kind"],
+                )
+            )
+            .mappings()
+            .first()
+        )
+        if (dict(current) if current else None) != entry["after"]:
+            raise ValueError("Your preference has changed again; ask for a correction instead")
+        c.execute(
+            delete(db.preferences).where(
+                db.preferences.c.subject == entry["subject"],
+                db.preferences.c.kind == entry["kind"],
+            )
+        )
+        if entry["before"]:
+            c.execute(insert(db.preferences).values(**entry["before"]))
+        c.execute(delete(db.state).where(db.state.c.key == key))
+        return "Undone — your previous preference is restored."
     match = re.fullmatch(
         r"(?:trip\s+)?(yes|confirm|save|no|discard)\s+([PLI][A-Fa-f0-9]{6})", text.strip(), re.I
     )

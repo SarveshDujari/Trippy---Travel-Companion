@@ -60,6 +60,8 @@ def context(c, discussion):
                 db.chat.c.body,
                 db.discussions.c.sender,
                 db.discussions.c.request_time,
+                db.discussions.c.id.label("discussion_id"),
+                db.discussions.c.message_id,
             )
             .join(db.discussions, db.chat.c.discussion_id == db.discussions.c.id)
             .where(db.chat.c.discussion_id.in_(eligible))
@@ -86,6 +88,12 @@ def context(c, discussion):
         characters += len(message["body"])
     return {
         "conversation": list(reversed(bounded_history)),
+        "current_sender": discussion["sender"],
+        "conversation_rules": (
+            "Each message has its own sender. Quoted wishes are not the current sender's wishes. "
+            "Resolve follow-ups using the supplied history; ask when more than one option fits. "
+            "Only the current message can supply evidence for a personal memory update."
+        ),
         "this_persons_explicit_trip_details": [dict(f) for f in memory],
         "default_destination": "Hyderabad, India",
         "real_itinerary_status": (
