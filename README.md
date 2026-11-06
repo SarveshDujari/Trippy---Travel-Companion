@@ -10,16 +10,17 @@ approves reservation changes.
 Real purchases and payment processing are outside the project. Live checks have
 verified sourced weather/place/walking replies, a simulated disruption, a real
 linked Telegram account's short-code approval, and all three simulator outcomes.
-The newest memory, privacy, verification and specialist changes are implemented
+The newest contextual trip utilities, memory, privacy, verification and specialist changes are implemented
 and tested locally. Their updated live Switch deployment is still pending.
 
-**Local evidence:** 193 passing tests · 115/115 deterministic scenario checks ·
+**Local evidence:** 219 passing tests · 115/115 deterministic scenario checks ·
 process-crash recovery verified. These counts describe application behavior under
 controlled scenarios, not a live-model conversation-quality score.
 
 ## Contents
 
 - [Features](#features)
+- [Contextual trip assistance](#contextual-trip-assistance)
 - [Architecture and agent responsibilities](#architecture)
 - [Optional specialist roles](#optional-specialist-roles)
 - [Worked use cases](#worked-use-cases)
@@ -41,6 +42,10 @@ controlled scenarios, not a live-model conversation-quality score.
 
 ## Features
 
+- **Contextual finishing touches:** next-stop and trip summary cards, readiness checks,
+  delay previews, daily personal budget, optional reminders/check-ins, and reviewed
+  saved-itinerary edits. Indoor alternatives require relevant rain/heat evidence;
+  the default help stays compact. See [usage and limits](CONTEXTUAL_TOUCHES.md).
 - **Travel conversation:** sightseeing, food, packing, comfort and itinerary advice.
 - **Disruption recovery:** simulated flight-delay events trigger dependency-aware
   replanning, invalidate old proposals and request fresh approval.
@@ -71,6 +76,54 @@ controlled scenarios, not a live-model conversation-quality score.
   continue through the direct Planner/tool flow.
 - **Recovery and tracing:** durable inbox/outbox, replay protection, workflow
   inspection and an actual-process crash-recovery demonstration.
+
+## Contextual trip assistance
+
+The default help stays small: **what's next**, **show my trip**, and **checklist**.
+Other tools appear when requested or relevant, rather than crowding every reply.
+These cards use the requesting person's saved, confirmed trip information and
+keep it separate from the simulated booking demo.
+
+| Feature | How it works |
+|---|---|
+| Next stop and quick actions | Shows the next stop, time and map link. Reply `show route`, `find food`, or `remind me`. A saved user-estimated travel allowance enables a departure-time calculation. |
+| Trip summary | Shows saved stops, dates, stays, transport and location links. |
+| Readiness checklist | Tracks self-reported tickets, stay details and packing; flags missing stop details and pending reviews. |
+| Running late | `trip late 20` previews which flexible stops could be shortened or skipped while protecting fixed bookings. |
+| Weather alternatives | Offers indoor alternatives for explicitly outdoor Hyderabad stops only with fresh, relevant rain/heat evidence, or when explicitly requested. No default backup for every stop. |
+| Meal and rest gaps | A requested summary flags long scheduled stretches without recorded meals or breaks, with at most two prompts. |
+| Daily personal budget | Compares a daily INR budget with the person's identifiable split shares in expenses they recorded that day. |
+| Recommendation explanations | Explains comparison order, unmet requirements and unknowns; relevant food preferences are visible and correctable. |
+| Evidence freshness | Tool facts show check times and cached-result labels. Failed checks are identified while usable results remain available. |
+| Optional reminders | One next-stop reminder, durable deduplication, quiet hours and an off control. Passed stops do not generate late catch-up alerts. |
+| Evening check-in | Opt-in pace feedback informs current/next-day suggestions without automatically rewriting the plan. |
+| Reviewed itinerary edits | Add, mark, move or skip eligible saved stops through an expiring confirmation preview; no supplier booking is changed. |
+
+Examples:
+
+```text
+what's next
+show my trip
+trip done packing
+trip late 20
+trip remind 30
+trip remind off
+trip checkin 20:30
+trip checkin tired
+trip checkin off
+Share with group: trip budget 1500
+```
+
+Notifications require the worker to remain online. Reminder/check-in quiet hours
+are **22:00–07:00 IST**. Quick actions are text shortcuts and clickable map links;
+the current Switch transport does not expose native Telegram callback buttons.
+Food discovery uses the existing tools; a complete route-aware restaurant itinerary
+and live flight/train status integrations are not included in this update.
+
+See [the contextual feature guide](CONTEXTUAL_TOUCHES.md) for weather thresholds,
+text itinerary entry, edit confirmations, privacy, budget calculations and rollout.
+No database migration is needed. The live worker must be restarted and the updated
+agent instructions synced before these local changes are available in Switch.
 
 ## Architecture
 

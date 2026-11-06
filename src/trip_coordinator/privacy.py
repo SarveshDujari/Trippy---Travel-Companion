@@ -9,7 +9,7 @@ from . import storage as db
 SENSITIVE_KINDS = {"senior", "wheelchair", "fatigue_limit", "max_walk_m"}
 SENSITIVE = re.compile(
     r"\b(?:expense|expenses|spent|split.{0,20}bill|senior|wheelchair|fatigue|"
-    r"medical|diagnos\w*|medication|walking limit|max_walk_m|fatigue_limit)\b",
+    r"medical|diagnos\w*|medication|walking limit|max_walk_m|fatigue_limit|budget)\b",
     re.I,
 )
 NOTICE = (

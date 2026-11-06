@@ -454,6 +454,11 @@ class Coordinator:
                             + " · checked "
                             + weather_data["checked_at"]
                         )
+                    from .companion import reply_context
+
+                    footer = reply_context(json.loads(saved["context"]))
+                    if footer:
+                        text_reply += "\n\n" + footer
                     enqueue(
                         c,
                         reply.discussion_id + ":reply",
@@ -548,6 +553,19 @@ class Coordinator:
             return "memory_card"
         if explicit_share and command_body.startswith("trip "):
             message = message.model_copy(update={"body": command_body})
+        from .companion import command as companion_command
+
+        try:
+            companion_reply = companion_command(
+                c, command_body, message.sender, message.message_id, now
+            )
+        except ValueError as exc:
+            raise Rejected(str(exc)) from exc
+        if companion_reply is not None:
+            enqueue(
+                c, message.message_id + ":companion", companion_reply, now, show_reference=False
+            )
+            return "companion_command"
         from .family import command as family_command
 
         try:

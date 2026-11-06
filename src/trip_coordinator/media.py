@@ -87,7 +87,12 @@ def render_plan(c, comparison_id=None):
         .first()
     )
     imported = [
-        dict(x) for x in c.execute(select(db.imported).order_by(db.imported.c.start)).mappings()
+        dict(x)
+        for x in c.execute(
+            select(db.imported)
+            .where(db.imported.c.status != "skipped")
+            .order_by(db.imported.c.start)
+        ).mappings()
     ]
     if latest:
         body = json.loads(latest["body"])

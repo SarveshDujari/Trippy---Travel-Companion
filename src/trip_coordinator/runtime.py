@@ -348,6 +348,10 @@ async def run(engine, config, key):
         while True:
             await connected.wait()
             coordinator.expire()
+            from .companion import tick
+
+            with engine.begin() as c:
+                tick(c, int(time.time()))
             await dispatch_once(engine, client, config.room_id)
             await process_tool()
             await prepare_discussion()

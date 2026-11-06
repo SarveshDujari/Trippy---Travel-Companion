@@ -101,6 +101,19 @@ class Verifier:
             if source.get("status") == "available":
                 safe_data(source.get("data", {}))
         forecast_scope(reply, snapshot, request, evidence)
+        indoor_advice = re.search(
+            r"\b(?:consider|suggest|recommend|try|choose|switch to|visit|offer)\b.{0,60}\bindoor\b",
+            reply.reply + " " + " ".join(reply.suggestions),
+            re.I,
+        )
+        if (
+            indoor_advice
+            and not snapshot.get("weather_alternative_triggers")
+            and not re.search(r"\bindoor\b", request, re.I)
+        ):
+            raise ValueError(
+                "Indoor alternatives need a relevant weather trigger or explicit request"
+            )
         # Named places from available tools must be declared, not smuggled into prose.
         cited = {str(c.value).casefold() for c in reply.claims if isinstance(c.value, str)}
 

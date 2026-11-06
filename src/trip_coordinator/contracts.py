@@ -90,6 +90,13 @@ class DiscussionReply(StrictModel):
             "privacy",
             "expenses",
             "forget",
+            "next",
+            "summary",
+            "checklist",
+            "route",
+            "budget",
+            "checkin",
+            "why",
         ]
         | None
     ) = None
@@ -165,7 +172,7 @@ class MemberDraft(StrictModel):
 
 class ImportItem(StrictModel):
     title: str = Field(min_length=1, max_length=120)
-    kind: Literal["flight", "train", "hotel", "activity", "transfer", "other"]
+    kind: Literal["flight", "train", "hotel", "activity", "transfer", "other", "meal", "break"]
     start: datetime | None = None
     end: datetime | None = None
     location: str | None = Field(default=None, max_length=200)

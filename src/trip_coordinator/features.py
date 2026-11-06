@@ -403,6 +403,13 @@ def chat_command(c, command, message, now):
 
     if command == "help":
         return (
+            "Tell me what you need for your trip, or send a ticket image for review.\n"
+            "Try: what's next · show my trip · checklist\n"
+            "Reminders and suggestions appear only when relevant or requested.\n"
+            "More shortcuts: trip help more"
+        )
+    if command == "help more":
+        return (
             "Tell me preferences naturally, e.g. 'I prefer vegetarian food', "
             "and confirm the suggestion.\n"
             "Send a travel image for review, or ask 'Show my plan as a visual'.\n"
@@ -414,6 +421,13 @@ def chat_command(c, command, message, now):
             "trip spent 1200 dinner | Dad,Mom,Me\ntrip expenses\n"
             "trip briefing 08:00 / trip briefing off\ntrip links Hyderabad\n"
             "trip tips / trip senior on\ntrip status / trip forget\n"
+            "Your real trip: trip next / trip summary / trip checklist\n"
+            "trip done packing / trip undo packing (also tickets, stay)\n"
+            "trip late 20 / trip remind 30 / trip remind off\n"
+            "trip checkin tired / good / busy; trip checkin 20:30 / off\n"
+            "trip budget 1500 / trip budget / trip why\n"
+            "trip add (format help); trip mark ID outdoor / indoor / flexible / fixed\n"
+            "trip move ID ISO_DATETIME / trip skip ID (preview first)\n"
             "Approve/reject a proposal using its exact short code."
         )
     if command == "memory":
@@ -576,7 +590,8 @@ async def maybe_briefing(engine, config, weather_data, now):
         today = [
             dict(x)
             for x in c.execute(select(db.items)).mappings()
-            if datetime.fromisoformat(x["start"]).date() == local.date()
+            if datetime.fromisoformat(x["start"]).astimezone(ZoneInfo("Asia/Kolkata")).date()
+            == local.date()
         ]
         body = "Morning briefing â€” Hyderabad\n"
         if weather_data.get("demo_mode"):
@@ -598,8 +613,27 @@ async def maybe_briefing(engine, config, weather_data, now):
                 body += "No forecast for today is available.\n"
         else:
             body += "Weather could not be checked.\n"
-        body += "SIMULATED itinerary: " + (", ".join(x["id"] for x in today) or "no items today")
-        body += "\nConsider water, comfortable footwear and any personal essentials."
+        from .companion import parse_time
+
+        real = [
+            dict(x)
+            for x in c.execute(
+                select(db.imported).where(db.imported.c.status != "skipped")
+            ).mappings()
+        ]
+        if real:
+            count = sum(
+                1
+                for x in real
+                if parse_time(x["start"]) and parse_time(x["start"]).date() == local.date()
+            )
+            body += f"Saved trip information: {count} stop(s) today across the group."
+            body += "\nReply: what's next · show my trip"
+        else:
+            body += "SIMULATED itinerary: " + (
+                ", ".join(x["id"] for x in today) or "no items today"
+            )
+            body += "\nSend your real itinerary to get personal trip updates."
         enqueue(c, key, body, now, show_reference=False)
         Coordinator._state(c, "last_briefing", key)
         return True

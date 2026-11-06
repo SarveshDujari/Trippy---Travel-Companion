@@ -81,7 +81,14 @@ def preferences(c):
 
 
 def _create(c, kind, sender, confirmer, message_id, payload, now):
-    prefix = {"preference": "P", "member": "L", "import": "I", "expense": "E", "forget": "F"}[kind]
+    prefix = {
+        "preference": "P",
+        "member": "L",
+        "import": "I",
+        "expense": "E",
+        "forget": "F",
+        "companion": "C",
+    }[kind]
     code = prefix + secrets.token_hex(3).upper()
     while c.execute(select(db.confirmations.c.code).where(db.confirmations.c.code == code)).first():
         code = prefix + secrets.token_hex(3).upper()
@@ -498,6 +505,10 @@ def decide(c, code, sender, accept, now):
         from .discussion import forget
 
         forget(c, sender)
+    elif accept and entry["kind"] == "companion":
+        from .companion import apply_edit
+
+        apply_edit(c, sender, {**payload, "code": entry["code"]})
     elif accept and entry["kind"] == "import":
         for index, item in enumerate(payload["items"]):
             c.execute(
@@ -553,7 +564,7 @@ def command(c, text, sender, message_id, now):
         c.execute(delete(db.state).where(db.state.c.key == key))
         return "Undone — your previous preference is restored."
     match = re.fullmatch(
-        r"(?:trip\s+)?(yes|confirm|save|no|discard)\s+([PLIEF][A-Fa-f0-9]{6})", text.strip(), re.I
+        r"(?:trip\s+)?(yes|confirm|save|no|discard)\s+([PLIEFC][A-Fa-f0-9]{6})", text.strip(), re.I
     )
     if match:
         return decide(c, match[2], sender, match[1].lower() in {"yes", "confirm", "save"}, now)

@@ -236,6 +236,20 @@ async def compare(engine, client, arguments, *, discussion_id=None):
 
 def card(data):
     lines = [f"OUTING OPTIONS · {data['date']}", f"Starting point: {data['origin']}"]
+    feasible = [p for p in data["plans"] if p["evaluation"]["feasible"]]
+    if not feasible:
+        lines.append("Why no winner: both options have unmet or unverified hard requirements.")
+    elif len(feasible) == 1:
+        lines.append(
+            "Why this option: only "
+            + feasible[0]["name"]
+            + " passes the supplied hard requirements."
+        )
+    else:
+        lines.append(
+            "Why this order: feasible options rank by the combined supplied preference "
+            "scores; equal scores do not establish a better option."
+        )
     if any(p.get("demo_mode") for p in data.get("proof", [])):
         age = max(p.get("age_seconds", 0) for p in data["proof"])
         lines.insert(0, f"CACHED DEMO — historical evidence up to {age} seconds old; not live")

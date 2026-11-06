@@ -72,6 +72,15 @@ def verify(reply, snapshot, request):
             "duration_minutes": "Estimated route time (min)",
         }.get(field, field.replace("_", " "))
         citation = f"{label}: {actual} [source: {source['source_url']}]"
+        fetched = source.get("retrieved_at") or source.get("data", {}).get("fetched_at")
+        if fetched and not source.get("demo_mode"):
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+
+            checked = datetime.fromtimestamp(fetched, ZoneInfo("Asia/Kolkata"))
+            citation += f" · checked {checked:%d %b %H:%M IST}"
+            if source.get("cache", {}).get("hit"):
+                citation += " (saved result)"
         if citation not in rendered:
             rendered.append(citation)
         if source.get("demo_mode"):

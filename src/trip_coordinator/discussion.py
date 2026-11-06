@@ -100,7 +100,12 @@ def context(c, discussion):
             "User-confirmed imports are information, not supplier verification. "
             "Demo reservations stay separate."
         ),
-        "imported_itinerary": [dict(x) for x in c.execute(select(db.imported)).mappings()],
+        "imported_itinerary": [
+            dict(x)
+            for x in c.execute(
+                select(db.imported).where(db.imported.c.status != "skipped")
+            ).mappings()
+        ],
         "family_directory": directory(c),
         "pending_demo_booking_approvals": [
             {
@@ -184,6 +189,9 @@ def accept(c, reply, now):
 
 
 def forget(c, sender):
+    from .companion import forget as forget_companion
+
+    forget_companion(c, sender)
     ids = select(db.discussions.c.id).where(db.discussions.c.sender == sender)
     identities = list(c.execute(ids).scalars())
     assignments = list(
@@ -310,6 +318,36 @@ def dispatch(c, discussion, config, forecast, now):
         ).mappings()
     ]
     snapshot["current_time"] = datetime.fromtimestamp(now, ZoneInfo("Asia/Kolkata")).isoformat()
+    from .companion import display, read, stops, upcoming, weather_hint
+
+    companion_data = read(c, discussion["sender"])
+    next_items = upcoming(c, discussion["sender"], now)
+    if next_items:
+        next_item = next_items[0]
+        snapshot["next_stop"] = {
+            "title": display(next_item["title"]),
+            "location": display(next_item["location"]),
+            "start": next_item["start"],
+            "source": "user-confirmed information, not supplier-verified",
+        }
+    snapshot["weather_alternative_triggers"] = [
+        hint
+        for item in stops(c, discussion["sender"])
+        if (hint := weather_hint(c, discussion["sender"], item, now, snapshot["weather"]))
+    ][:2]
+    feedback = companion_data.get("feedback", {})
+    local_day = datetime.fromtimestamp(now, ZoneInfo("Asia/Kolkata")).date()
+    from datetime import timedelta
+
+    if feedback.get("day") in {local_day.isoformat(), (local_day - timedelta(days=1)).isoformat()}:
+        snapshot["pace_feedback"] = feedback
+    snapshot["contextual_help_rules"] = (
+        "Keep responses focused; offer at most two relevant next actions. "
+        "Indoor alternatives are conditional on fresh rain/heat evidence for an outdoor stop's "
+        "date and location, never a default extra stop. Missing weather is not bad weather. "
+        "If pace_feedback says tired/busy, suggest fewer optional stops and a rest tomorrow; "
+        "do not change the itinerary. Use assistant_action for deterministic saved-trip cards."
+    )
     if config.group_privacy:
         snapshot["pending_confirmations"] = [
             {k: x[k] for k in ["code", "kind", "expires_at", "status"]}
