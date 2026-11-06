@@ -8,12 +8,22 @@
   "reservation_participant_id": "REPLACE_WITH_RESERVATION_OPAQUE_PARTICIPANT_ID",
   "reservation_name": "trip-reservations",
   "members": [
-    {"participant_id": "REPLACE_WITH_YOUR_LINKED_OPAQUE_PARTICIPANT_ID", "can_approve": true}
+    {
+      "participant_id": "REPLACE_WITH_YOUR_LINKED_OPAQUE_PARTICIPANT_ID",
+      "can_approve": true
+    }
   ],
   "database_path": "data/trips.db",
   "approval_ttl_seconds": 600,
   "assignment_ttl_seconds": 300,
   "weather_enabled": false,
   "conversation_enabled": false,
-  "work_room_id": null
+  "work_room_id": null,
+  "discussion_retention_days": 30,
+  "group_privacy": true,
+  "researcher_participant_id": null,
+  "mediator_participant_id": null,
+  "watcher_participant_id": null,
+  "watcher_quiet_start": 22,
+  "watcher_quiet_end": 7
 }

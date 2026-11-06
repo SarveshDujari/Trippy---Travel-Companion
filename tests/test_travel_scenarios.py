@@ -85,7 +85,7 @@ def test_family_scenario(setup, scenario):
             assert not get(engine, db.preferences)
         elif scenario == "memory-inspection":
             say("trip memory", "inspect")
-            assert '"evidence_id": "remember"' in get(engine, db.outbox)[-1]["body"]
+            assert "evidence: remember" in get(engine, db.outbox)[-1]["body"]
         else:
             assert get(engine, db.preferences)[0]["author"] == "parent"
     elif scenario in {

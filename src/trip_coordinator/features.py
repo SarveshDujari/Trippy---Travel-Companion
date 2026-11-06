@@ -529,7 +529,15 @@ def chat_command(c, command, message, now):
             f"{p}: {v / 100:.2f}" for p, v in shares.items()
         )
     if command == "expenses":
-        rows = [dict(x) for x in c.execute(select(db.expenses).limit(50)).mappings()]
+        rows = [
+            dict(x)
+            for x in c.execute(
+                select(db.expenses)
+                .where(db.expenses.c.payer == message.sender)
+                .order_by(db.expenses.c.created_at.desc())
+                .limit(50)
+            ).mappings()
+        ]
         return "Reported expenses (latest up to 50):\n" + json.dumps(rows, ensure_ascii=False)
     if command.startswith("briefing "):
         schedule = command[9:]
@@ -571,6 +579,11 @@ async def maybe_briefing(engine, config, weather_data, now):
             if datetime.fromisoformat(x["start"]).date() == local.date()
         ]
         body = "Morning briefing â€” Hyderabad\n"
+        if weather_data.get("demo_mode"):
+            body += (
+                f"CACHED DEMO — historical forecast, age "
+                f"{weather_data.get('age_seconds', 0)} seconds.\n"
+            )
         if weather_data.get("status") == "available":
             day = next(
                 (d for d in weather_data["daily"] if d["date"] == local.date().isoformat()), None

@@ -81,7 +81,7 @@ def preferences(c):
 
 
 def _create(c, kind, sender, confirmer, message_id, payload, now):
-    prefix = {"preference": "P", "member": "L", "import": "I"}[kind]
+    prefix = {"preference": "P", "member": "L", "import": "I", "expense": "E", "forget": "F"}[kind]
     code = prefix + secrets.token_hex(3).upper()
     while c.execute(select(db.confirmations.c.code).where(db.confirmations.c.code == code)).first():
         code = prefix + secrets.token_hex(3).upper()
@@ -181,7 +181,12 @@ def propose_preference(c, draft, current, now):
         c, "preference", current["sender"], confirmer, current["message_id"], payload, now
     )
     # Clear soft preferences owned by the sender are reversible without a ceremony.
-    if target and target["participant_id"] == current["sender"] and not draft.hard:
+    conflict = prior and (
+        json.loads(prior["value"]) != value
+        or prior["hard"] != draft.hard
+        or draft.operation == "remove"
+    )
+    if target and target["participant_id"] == current["sender"] and not draft.hard and not conflict:
         decide(c, code, current["sender"], True, now)
         key = "undo-memory:" + code
         after = (
@@ -229,7 +234,16 @@ def propose_preference(c, draft, current, now):
         "senior": "senior comfort mode",
     }
     return (
-        f"{action} for {name}: {labels[draft.kind]} = {value} "
+        (
+            f"Existing: {json.loads(prior['value'])} "
+            f"({'hard limit' if prior['hard'] else 'preference'}), "
+            f"evidence {prior['evidence_id']}\nProposed: "
+            f"{'remove' if draft.operation == 'remove' else value}\n"
+            f"New evidence: {draft.evidence}\nReplace only after confirmation.\n"
+            if conflict
+            else ""
+        )
+        + f"{action} for {name}: {labels[draft.kind]} = {value} "
         f"({'hard limit' if draft.hard else 'preference'})? {consent}\n"
         f"Reply: yes {code}\nOr: no {code}\nExpires in 10 minutes."
     )
@@ -364,6 +378,26 @@ def decide(c, code, sender, accept, now):
             )
         if draft["operation"] == "remove":
             c.execute(
+                insert(db.events).values(
+                    id="pref_" + secrets.token_hex(8),
+                    kind="preference_changed",
+                    payload=json.dumps(
+                        {
+                            "subject": identity,
+                            "kind": draft["kind"],
+                            "before": dict(prior),
+                            "after": {
+                                "author": sender,
+                                "removed": True,
+                                "evidence_id": entry["message_id"],
+                            },
+                        }
+                    ),
+                    status="recorded",
+                    created_at=now,
+                )
+            )
+            c.execute(
                 delete(db.preferences).where(
                     db.preferences.c.subject == identity, db.preferences.c.kind == draft["kind"]
                 )
@@ -448,6 +482,22 @@ def decide(c, code, sender, accept, now):
                         owner=entry["sender"], alias=draft["name"].casefold(), member_id=target
                     )
                 )
+    elif accept and entry["kind"] == "expense":
+        from .features import expense
+
+        expense(
+            c,
+            sender,
+            payload["amount"],
+            payload["description"],
+            payload["participants"],
+            entry["message_id"],
+            now,
+        )
+    elif accept and entry["kind"] == "forget":
+        from .discussion import forget
+
+        forget(c, sender)
     elif accept and entry["kind"] == "import":
         for index, item in enumerate(payload["items"]):
             c.execute(
@@ -503,7 +553,7 @@ def command(c, text, sender, message_id, now):
         c.execute(delete(db.state).where(db.state.c.key == key))
         return "Undone — your previous preference is restored."
     match = re.fullmatch(
-        r"(?:trip\s+)?(yes|confirm|save|no|discard)\s+([PLI][A-Fa-f0-9]{6})", text.strip(), re.I
+        r"(?:trip\s+)?(yes|confirm|save|no|discard)\s+([PLIEF][A-Fa-f0-9]{6})", text.strip(), re.I
     )
     if match:
         return decide(c, match[2], sender, match[1].lower() in {"yes", "confirm", "save"}, now)

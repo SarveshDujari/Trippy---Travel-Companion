@@ -22,6 +22,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--provision", action="store_true")
     parser.add_argument(
+        "--specialists",
+        action="store_true",
+        help="Also provision stopped Researcher, Mediator and Watcher roles",
+    )
+    parser.add_argument(
         "--activate",
         action="store_true",
         help="Join project roles to the selected Telegram group and start Codex",
@@ -91,7 +96,15 @@ def main():
             for name, instructions_file in [
                 ("trip-planner", "planner.md"),
                 ("trip-reservations", "reservations.md"),
-            ]:
+            ] + (
+                [
+                    ("trip-researcher", "researcher.md"),
+                    ("trip-mediator", "mediator.md"),
+                    ("trip-watcher", "watcher.md"),
+                ]
+                if args.specialists
+                else []
+            ):
                 if any(a["name"] == name for a in existing):
                     continue
                 workspace = ROOT / "data/agent-workspaces" / name

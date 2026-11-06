@@ -54,9 +54,42 @@ def worker_lock(database_path):
 def binding(engine, config):
     # Reusing a DB against a different room/identity can misattribute approvals.
     raw = config.model_dump(exclude={"approval_ttl_seconds", "assignment_ttl_seconds"})
+    optional = {
+        "researcher_participant_id",
+        "mediator_participant_id",
+        "watcher_participant_id",
+        "watcher_quiet_start",
+        "watcher_quiet_end",
+    }
+    base_raw = {k: v for k, v in raw.items() if k not in optional}
+    if not any(
+        [
+            config.researcher_participant_id,
+            config.mediator_participant_id,
+            config.watcher_participant_id,
+        ]
+    ):
+        raw = base_raw
     fingerprint = hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest()
     with engine.begin() as c:
         saved = dict(c.execute(select(db.state.c.key, db.state.c.value)).all())
+        if saved.get("binding") not in {None, fingerprint}:
+            base_hash = hashlib.sha256(json.dumps(base_raw, sort_keys=True).encode()).hexdigest()
+            active_work = c.execute(
+                select(db.discussions.c.id).where(
+                    db.discussions.c.status.in_(["queued", "waiting", "tool_pending"])
+                )
+            ).first()
+            active_task = c.execute(
+                select(db.tasks.c.id).where(
+                    ~db.tasks.c.state.in_(
+                        ["completed", "partially_completed", "failed", "cancelled"]
+                    )
+                )
+            ).first()
+            if saved["binding"] == base_hash and not active_work and not active_task:
+                Coordinator._state(c, "binding", fingerprint)
+                saved["binding"] = fingerprint
         if saved.get("binding") not in {None, fingerprint}:
             # Upgrade only a legacy binding with precisely the same original
             # server, family room, roles, and members. New private-room routing
@@ -68,6 +101,7 @@ def binding(engine, config):
                     "work_room_id",
                     "conversation_enabled",
                 }
+                | optional
             )
             legacy_hash = hashlib.sha256(json.dumps(legacy, sort_keys=True).encode()).hexdigest()
             if saved.get("binding_format") is None and saved["binding"] == legacy_hash:
@@ -200,6 +234,11 @@ async def run(engine, config, key):
                     .where(db.discussions.c.id == identity)
                     .values(status="failed")
                 )
+                assigned = c.execute(
+                    select(db.discussions.c.assigned_role).where(db.discussions.c.id == identity)
+                ).scalar()
+                if assigned == "watcher":
+                    continue
                 enqueue(
                     c,
                     identity + ":expired",
@@ -338,7 +377,7 @@ async def run(engine, config, key):
                 next_weather_check = time.time() + 900
                 try:
                     async with httpx.AsyncClient(timeout=15) as weather_client:
-                        await observe(engine, weather_client)
+                        await observe(engine, weather_client, config=config)
                 except (httpx.HTTPError, ValueError, KeyError):
                     log.warning("Weather check unavailable; no trip changes made")
             await asyncio.sleep(1)

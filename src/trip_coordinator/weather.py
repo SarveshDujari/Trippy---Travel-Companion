@@ -28,6 +28,25 @@ async def forecast(engine, client, now=None):
             select(db.state.c.value).where(db.state.c.key == "forecast_hyderabad")
         ).scalar()
     cached = json.loads(raw) if raw else None
+    with engine.connect() as c:
+        demo = (
+            c.execute(select(db.state.c.value).where(db.state.c.key == "cached-demo-mode")).scalar()
+            == "true"
+        )
+    if demo:
+        if cached and 0 <= now - cached["fetched_at"] <= 7 * 86400:
+            return {
+                **cached,
+                "demo_mode": True,
+                "age_seconds": now - cached["fetched_at"],
+                "label": "CACHED DEMO — historical forecast, not live",
+            }
+        return {
+            "status": "unavailable",
+            "demo_mode": True,
+            "checked_at": checked,
+            "instruction": "CACHED DEMO: no historical forecast available",
+        }
     if cached and 0 <= now - cached["fetched_at"] < 900:
         return {**cached, "cache_age_seconds": now - cached["fetched_at"]}
     try:
@@ -90,8 +109,14 @@ async def forecast(engine, client, now=None):
         }
 
 
-async def observe(engine, client: httpx.AsyncClient, now=None):
+async def observe(engine, client: httpx.AsyncClient, now=None, config=None):
     now = int(time.time()) if now is None else now
+    with engine.connect() as c:
+        if (
+            c.execute(select(db.state.c.value).where(db.state.c.key == "cached-demo-mode")).scalar()
+            == "true"
+        ):
+            return
     response = await client.get(
         "https://api.open-meteo.com/v1/forecast",
         params={
@@ -124,6 +149,11 @@ async def observe(engine, client: httpx.AsyncClient, now=None):
             )
         )
         if notify:
+            if config is not None and config.watcher_participant_id:
+                from .specialists import weather_event
+
+                weather_event(c, config, source_time, code, now)
+                return
             enqueue(
                 c,
                 f"weather:{source_time}:{code}",

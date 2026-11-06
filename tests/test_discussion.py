@@ -235,6 +235,11 @@ def test_legacy_binding_upgrade_preserves_original_identity_checks(setup):
             "assignment_ttl_seconds",
             "work_room_id",
             "conversation_enabled",
+            "researcher_participant_id",
+            "mediator_participant_id",
+            "watcher_participant_id",
+            "watcher_quiet_start",
+            "watcher_quiet_end",
         }
     )
     digest = hashlib.sha256(json.dumps(legacy, sort_keys=True).encode()).hexdigest()

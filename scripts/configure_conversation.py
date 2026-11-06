@@ -1,4 +1,4 @@
-"""Configure the existing three roles for private-workroom travel discussion."""
+"""Configure core roles and any explicitly mapped optional specialists."""
 
 import json
 import os
@@ -26,13 +26,15 @@ def main():
         )
         response.raise_for_status()
         agents = client.get("/gateway/agents").raise_for_status().json()
-        roles = {
-            a["name"]: a["id"]
-            for a in agents
-            if a["name"] in {"trip-coordinator", "trip-planner", "trip-reservations"}
+        wanted = {"trip-coordinator", "trip-planner", "trip-reservations"}
+        wanted |= {
+            "trip-" + role
+            for role in ["researcher", "mediator", "watcher"]
+            if config.get(role + "_participant_id")
         }
-        if len(roles) != 3:
-            raise SystemExit("The three existing project roles must be configured first")
+        roles = {a["name"]: a["id"] for a in agents if a["name"] in wanted}
+        if set(roles) != wanted:
+            raise SystemExit("Provision every configured role before configuring handoffs")
         rooms = client.get("/gateway/rooms").raise_for_status().json()
         matches = [r for r in rooms if r["name"] == "Trippy private workroom"]
         if len(matches) > 1:
@@ -63,7 +65,7 @@ def main():
                 .raise_for_status()
                 .json()
             )
-        for name in ["trip-planner", "trip-reservations"]:
+        for name in sorted(wanted - {"trip-coordinator"}):
             client.put(
                 f"/gateway/agents/{roles[name]}/addressing-policy",
                 json={
@@ -79,7 +81,9 @@ def main():
                 },
             ).raise_for_status()
             filenames = (
-                ["advisor.md", "planner.md"] if name == "trip-planner" else ["reservations.md"]
+                ["advisor.md", "planner.md"]
+                if name == "trip-planner"
+                else ["reservations.md" if name == "trip-reservations" else name[5:] + ".md"]
             )
             instructions = "\n\n".join(
                 (ROOT / "agents" / file).read_text(encoding="utf-8") for file in filenames
@@ -105,7 +109,7 @@ def main():
         config["work_room_id"] = workroom["id"]
         config["conversation_enabled"] = True
         config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
-        print("Configured three roles, private internal handoffs, and conversational mode.")
+        print(f"Configured {len(roles)} roles with private handoffs and conversational mode.")
 
 
 if __name__ == "__main__":

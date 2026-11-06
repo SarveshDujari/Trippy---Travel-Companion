@@ -117,6 +117,8 @@ discussions = Table(
     Column("context", Text),
     Column("request_time", Integer),
     Column("attachments_json", Text),
+    Column("assigned_role", String, nullable=False, server_default="planner"),
+    Column("specialist_notes", Text, nullable=False, server_default="{}"),
 )
 chat = Table(
     "chat_messages",

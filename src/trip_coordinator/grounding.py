@@ -31,8 +31,13 @@ def verify(reply, snapshot, request):
                 "status": "available",
                 "data": snapshot["weather"],
                 "source_url": "https://open-meteo.com/",
+                "demo_mode": snapshot["weather"].get("demo_mode", False),
+                "age_seconds": snapshot["weather"].get("age_seconds", 0),
             },
         )
+    from .verifier import Verifier
+
+    Verifier.validate(reply, snapshot, request, evidence)
     rendered, allowed = [], numbers(request)
     if reply.image is not None:
         if not snapshot.get("image_count"):
@@ -69,6 +74,10 @@ def verify(reply, snapshot, request):
         citation = f"{label}: {actual} [source: {source['source_url']}]"
         if citation not in rendered:
             rendered.append(citation)
+        if source.get("demo_mode"):
+            label = f"CACHED DEMO — evidence age {source['age_seconds']} seconds; not live."
+            if label not in rendered:
+                rendered.append(label)
     if reply.uses_weather and not any(
         c.source_id == "weather"
         or "open-meteo" in evidence.get(c.source_id, {}).get("source_url", "")
@@ -83,8 +92,12 @@ def verify(reply, snapshot, request):
         allowed.update(numbers(stamp))
     if numbers(reply.reply) - allowed:
         raise ValueError("Numerical facts need evidence citations")
+    if any(numbers(suggestion) - allowed for suggestion in reply.suggestions):
+        raise ValueError("Suggestion numbers need evidence too")
     if re.search(
-        r"\b(?:I(?:'ve| have)|we have|successfully)\s+(?:booked|paid|reserved)\b", reply.reply, re.I
+        r"\b(?:I(?:'ve| have)|we have|successfully)\s+(?:booked|paid|reserved)\b",
+        reply.reply + " " + " ".join(reply.suggestions),
+        re.I,
     ):
         raise ValueError("Conversation cannot claim booking execution")
     return "\n".join(rendered)

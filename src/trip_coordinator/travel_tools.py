@@ -103,6 +103,32 @@ async def execute(engine, client, name, arguments, *, discussion_id=None):
     key = "toolcache:" + name + ":" + json.dumps(arguments, sort_keys=True)
     with engine.connect() as c:
         cached = c.execute(select(db.state.c.value).where(db.state.c.key == key)).scalar()
+        demo = (
+            c.execute(select(db.state.c.value).where(db.state.c.key == "cached-demo-mode")).scalar()
+            == "true"
+        )
+    if demo:
+        value = json.loads(cached) if cached else None
+        if (
+            value
+            and value["status"] == "available"
+            and 0 <= now - value["retrieved_at"] <= 7 * 86400
+        ):
+            return {
+                **value,
+                "demo_mode": True,
+                "stale": True,
+                "age_seconds": now - value["retrieved_at"],
+                "label": "CACHED DEMO — historical evidence, not a live check",
+            }
+        return {
+            "status": "unavailable",
+            "demo_mode": True,
+            "source_url": source,
+            "retrieved_at": now,
+            "data": {},
+            "reason": "CACHED DEMO: no successful cached result within seven days",
+        }
     if cached:
         value = json.loads(cached)
         ttl = (900 if name == "weather" else 86400) if value["status"] == "available" else 60
@@ -269,6 +295,9 @@ async def execute(engine, client, name, arguments, *, discussion_id=None):
                     "confirm important accessibility needs."
                 ),
             }
+        from .verifier import safe_data
+
+        safe_data(data)
         result = {"status": "available", "source_url": source, "retrieved_at": now, "data": data}
         with engine.begin() as c:
             Coordinator._state(c, key, json.dumps(result))

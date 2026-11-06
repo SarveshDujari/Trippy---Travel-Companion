@@ -34,7 +34,15 @@ async def main():
     agents = {
         a["name"]: a["id"]
         for a in discovery["agents"]
-        if a["name"] in {"trip-coordinator", "trip-planner", "trip-reservations"}
+        if a["name"]
+        in {
+            "trip-coordinator",
+            "trip-planner",
+            "trip-reservations",
+            "trip-researcher",
+            "trip-mediator",
+            "trip-watcher",
+        }
     }
     conn = await asyncpg.connect(
         host=env["DB_HOST"],
@@ -58,10 +66,15 @@ async def main():
                 verified[0]["id"],
                 discovery["room"]["bridge_id"],
             )
-        if human is None or len(by_id) != 3:
+        if human is None or len(by_id) != len(agents):
             raise RuntimeError("Identity mapping is incomplete")
         config_path = ROOT / "config/runtime.local.json"
         existing = json.loads(config_path.read_text()) if config_path.exists() else {}
+        members = existing.get("members") or [{"participant_id": human, "can_approve": True}]
+        if human not in {m["participant_id"] for m in members}:
+            raise RuntimeError(
+                "Verified owner differs from existing family membership; review mapping"
+            )
         config = {
             **existing,
             "bridge_url": discovery["bridge_url"],
@@ -70,10 +83,13 @@ async def main():
             "coordinator_agent_id": agents["trip-coordinator"],
             "planner_participant_id": by_id[agents["trip-planner"]],
             "reservation_participant_id": by_id[agents["trip-reservations"]],
-            "members": [{"participant_id": human, "can_approve": True}],
+            "members": members,
             "database_path": existing.get("database_path", "data/telegram-demo.db"),
             "weather_enabled": existing.get("weather_enabled", False),
         }
+        for role in ["researcher", "mediator", "watcher"]:
+            if "trip-" + role in agents:
+                config[role + "_participant_id"] = by_id[agents["trip-" + role]]
         (ROOT / "config/runtime.local.json").write_text(
             json.dumps(config, indent=2), encoding="utf-8"
         )

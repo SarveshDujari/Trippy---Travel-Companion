@@ -2,18 +2,27 @@
 
 A family travel assistant that discusses plans in Telegram, checks travel data,
 and helps repair a disrupted itinerary through **Switch**. Trippy combines three
-separate agent roles with a deterministic Python backend: the model proposes;
-application code validates; a linked family member approves reservation changes.
+core roles and three optional specialists with a deterministic Python backend:
+the model proposes, application code validates, and a linked family member
+approves reservation changes.
 
 **Status:** working prototype for Hyderabad. Reservation changes are simulated.
 Real purchases and payment processing are outside the project. Live checks have
 verified sourced weather/place/walking replies, a simulated disruption, a real
 linked Telegram account's short-code approval, and all three simulator outcomes.
+The newest memory, privacy, verification and specialist changes are implemented
+and tested locally. Their updated live Switch deployment is still pending.
+
+**Local evidence:** 193 passing tests · 115/115 deterministic scenario checks ·
+process-crash recovery verified. These counts describe application behavior under
+controlled scenarios, not a live-model conversation-quality score.
 
 ## Contents
 
 - [Features](#features)
 - [Architecture and agent responsibilities](#architecture)
+- [Optional specialist roles](#optional-specialist-roles)
+- [Worked use cases](#worked-use-cases)
 - [Conversation and orchestration](#conversation-and-orchestration)
 - [Memory, identity and corrections](#memory-identity-and-corrections)
 - [Validation and trust boundaries](#validation-and-trust-boundaries)
@@ -25,6 +34,7 @@ linked Telegram account's short-code approval, and all three simulator outcomes.
 - [Simulated disruption demo](#simulated-disruption-demo)
 - [Dashboard](#dashboard)
 - [Verification](#verification)
+- [Privacy and retention](#privacy-retention-and-transparent-memory)
 - [Current boundaries](#current-boundaries)
 - [Repository layout](#repository-layout)
 - [Roadmap](#roadmap)
@@ -54,8 +64,11 @@ linked Telegram account's short-code approval, and all three simulator outcomes.
   with generated source citations.
 - **Trip utilities:** comfort scores, expense splits, opt-in briefings, calendar
   export, Hyderabad tips and booking search links.
-- **Operator dashboard:** authenticated read-only trip, dependency, task, tool and
-  delivery views for explaining the demo.
+- **Operator dashboard:** timeline, dependency graph, approval history, evidence,
+  verification and delivery views, plus authenticated simulated-demo controls.
+- **Selective specialist handoffs:** Researcher gathers evidence, Mediator explains
+  computed compromises, and Watcher assesses sourced events. Simple questions
+  continue through the direct Planner/tool flow.
 - **Recovery and tracing:** durable inbox/outbox, replay protection, workflow
   inspection and an actual-process crash-recovery demonstration.
 
@@ -64,34 +77,155 @@ linked Telegram account's short-code approval, and all three simulator outcomes.
 ```mermaid
 flowchart TD
     Family[Family Telegram group] <--> Switch[Switch bridge]
-    Switch <--> Coordinator[Coordinator: deterministic Python runtime]
-    Coordinator <--> DB[(SQLite)]
-    Coordinator --> Planner[Planner: discussion and proposed changes]
-    Planner --> Tools[Bounded read-only tool jobs]
+    Switch <--> C[Coordinator: routing and durable state]
+    C <--> DB[(SQLite)]
+    C <--> P[Planner: conversation and proposed changes]
+    C <--> R[Researcher: optional evidence gathering]
+    C <--> M[Mediator: optional trade-off explanation]
+    C <--> W[Watcher: optional event assessment]
+    C --> Tools[Validated read-only tool jobs]
     Tools --> Weather[Open-Meteo]
     Tools --> Maps[Nominatim / Overpass / routing]
     Tools --> DB
-    Planner --> Validation[Constraint and evidence validation]
-    Validation --> Approval[Human approval with exact scope and expiry]
-    Approval --> Reservations[Reservation agent]
-    Reservations --> Simulator[Transactional reservation simulator]
+    Schedule[Scheduled weather observations] --> C
+    Demo[Authenticated simulated delay event] --> C
+    C --> V[Evidence, constraint and identity validation]
+    V --> Approval[Exact human proposal approval]
+    Approval --> C
+    C <--> Reservation[Reservation role]
+    C --> Simulator[Transactional reservation simulator]
     Simulator --> DB
     DB --> Outbox[Durable outgoing messages]
     Outbox --> Switch
-    Demo[Authenticated simulated delay webhook] --> Coordinator
 ```
 
-There are exactly **three roles**:
+There are **three core roles**, plus **three optional specialists**:
 
 | Role | Responsibility |
 |---|---|
 | Coordinator | Authenticates senders, routes messages, validates results, owns state and approvals, and delivers replies. Runs as application code. |
 | Planner | Discusses the trip, requests permitted read-only tools and proposes repairs. |
 | Reservation | Requests execution of approved simulated changes. Cannot approve spending or claim supplier confirmation. |
+| Researcher (optional) | Gathers bounded travel evidence for the Planner using existing read-only tools. |
+| Mediator (optional) | Explains trade-offs and selects a feasible, deterministically scored option. |
+| Watcher (optional) | Assesses scheduler-generated current-weather events against the simulated itinerary and advises the family. |
 
-Planner and Reservation exchange structured messages with the Coordinator in a
+The model roles exchange structured messages with the Coordinator in a
 private Switch workroom. The Coordinator sends readable replies to the family
 group. Files under `agents/` are functional instructions loaded by the integration.
+
+### Why this architecture
+
+The three core roles own the main workflow. Application logic separates `memory.py` (transparent
+cards and confirmed utilities), `privacy.py` (audience policy and retention), and
+`verifier.py` (forecast scope, provider-content screening and validation entry point).
+The Coordinator remains the transactional orchestrator. Authorization and retention
+decisions are enforced in application code.
+
+A transport interface and a full FakeTransport smoke test would be useful next
+for portability and a no-Switch demo. PostgreSQL, a distributed queue and additional
+agents are not required for the current single-worker deployment. They should
+follow demonstrated concurrency or deployment needs. Setup helpers still have
+version-specific Windows assumptions and some fixed room/template names.
+
+## Optional specialist roles
+
+The specialists have durable assignments and distinct verified Switch identities.
+They do not become extra approvers, bypass validation or replace the Coordinator.
+When their participant IDs are null, the original core workflow remains available.
+
+```mermaid
+flowchart TD
+    Family[Family in Telegram] <--> C[Coordinator]
+    C <--> P[Planner]
+    P -->|Bounded research objective| C
+    C <--> R[Researcher]
+    R -->|Typed tool request| C
+    C --> T[Existing read-only travel tools]
+    T --> C
+    P -->|Computed options available| C
+    C <--> M[Mediator]
+    Schedule[Scheduled weather checks] --> Change[Meaningful sourced event]
+    Change --> C
+    C <--> W[Trip Watcher]
+    C -->|Validated evidence advisory| Family
+    C --> Approval[Human proposal approval]
+    Approval --> Reservation[Reservation role and simulator]
+```
+
+### Researcher
+
+The Planner delegates an evidence-gathering objective through `trip_delegate`.
+The Researcher may request the same bounded tools as the Planner; it shares the
+three-tool limit across the entire discussion rather than receiving a new budget.
+Each tool continuation gets a fresh assignment ID. A validated
+`trip_specialist_result` stores advice and verified citations, then resumes the
+Planner. The Researcher cannot mutate memory, approve, book, delegate again or
+publish directly to the group.
+
+### Family Mediator
+
+Delegation requires existing computed plan options. The Mediator explains the
+trade-offs using supplied preferences and evidence, without recalculating scores
+or inventing plans. The Coordinator rejects a recommendation blocked by hard
+constraints. If neither option is feasible the Mediator may return no selection;
+it cannot manufacture an acceptable compromise. Private personal thresholds remain
+withheld under group privacy. Recommendations are advice, not family authorization.
+
+### Trip Watcher
+
+Current-weather observation runs in application code when `weather_enabled=true`.
+A potentially relevant rain observation can queue a Watcher assignment. Event IDs
+are deduplicated, a one-hour event cooldown applies, and default quiet hours are
+22:00–07:00 Asia/Kolkata. Equal start/end hours disable the quiet window.
+Events must be recent, and the simulated itinerary must contain items on the
+observation date. Quiet hours are checked again before alert delivery.
+
+The Watcher returns sourced claims, eligible itinerary item IDs and whether
+alternatives may be worth discussing. The Coordinator validates these and renders
+the group advisory from evidence, not raw model prose. It makes no booking change
+and does not automatically authorize a repair. The family can ask the Planner to
+prepare alternatives. This integration currently covers **current weather and the
+simulated itinerary**; real flight-status monitoring, forecast heat triggers and
+full real-itinerary monitoring remain future extensions.
+
+### Bounded orchestration and recovery
+
+A discussion records `assigned_role` and `specialist_notes` in SQLite (migration
+`0005`). Completed specialist notes carry their status, advice, verified citations
+and any recommendation back to the Planner. Only the authenticated owner of the active assignment can respond.
+Researcher/Mediator may each be delegated once per discussion; they return to the
+Planner rather than starting agent-to-agent loops. Mediator and Watcher cannot
+request tools. Private-room checks, deadlines, shared tool budgets, validation,
+privacy and durable delivery remain application-owned.
+
+These are serial, optional handoffs. Simple conversations do not need extra model
+calls. More complex requests may take longer and consume more of the existing
+signed-in model account's usage allowance. No separate model API client or paid
+API account is introduced.
+
+### Connecting the specialists
+
+The Switch server must be running. Stop the Coordinator and back up its SQLite
+database before applying migrations. Then:
+
+1. Run `uv run python scripts/connect_local_switch.py --provision --specialists`
+   to provision the additional managed roles in a stopped state.
+2. Run the existing identity-mapping helper with Switch's native Python environment
+   to map actual verified transport identities. Never derive IDs from names.
+3. Run `uv run python scripts/configure_conversation.py` to load specialist
+   instructions and join all configured roles to the private workroom. The helper
+   restricts their addressing policy to the Coordinator and starts managed roles.
+4. Run `uv run python -m trip_coordinator init` to apply migration `0005` without
+   resetting an existing itinerary. Finish/cancel active work before changing role
+   bindings; identity/room changes retain the existing migration safeguards.
+5. Start the Coordinator normally. Enable `weather_enabled` only if weather polling
+   is desired. Optional participant fields are `researcher_participant_id`,
+   `mediator_participant_id` and `watcher_participant_id`; null disables a role.
+
+The dashboard lists configured specialists. Local tests verify handoffs and
+boundaries using protocol fixtures; they do not establish live specialist model
+quality. Provisioning and live checks remain pending until Switch is connected.
 
 ## Conversation and orchestration
 
@@ -150,8 +284,8 @@ that the model resolves every ambiguous follow-up correctly.
 | “Yes, go ahead” | Discuss the request; does not authorize reservations |
 
 Optional `trip ...` shortcuts remain available for explicit operation and testing.
-The `assistant_action` field supports family, approvals, calendar, status and
-propose_changes. The visual request has a separate field. Real outing comparisons
+The `assistant_action` field supports family, approvals, calendar, status,
+propose_changes, memory, privacy, expenses and confirmed memory deletion. The visual request has a separate field. Real outing comparisons
 remain separate from the fictional reservation fixture.
 
 ### Conversation lifecycle
@@ -202,6 +336,10 @@ must be supported by the quoted value, including supported kilometre conversion.
 - Unlinked companions' needs remain explicitly reported by their author.
 - “Forget my walking limit” proposes removal of the existing typed preference.
 
+Conflicting replacements show the existing value and evidence beside the proposed
+value and new evidence, and require confirmation even when the new preference is
+soft. Preference-change events retain before/after history, including removals.
+
 An immediate update provides `undo Pxxxxxx`, valid for ten minutes. Undo is tied
 to the original sender, works once and checks that the preference has not changed
 again. It restores the previous record rather than overwriting a newer correction.
@@ -232,13 +370,21 @@ Pydantic contracts and stored workflow state enforce accepted inputs and actions
 Tool results have source URLs, retrieval timestamps and a status. A declared
 claim identifies an evidence source and JSON pointer such as
 `/plans/0/walking_m`. The Coordinator compares the value with the stored evidence
-and renders citations. Unknown values and compound objects cannot be cited as
+and renders the factual response directly from checked claims. Model reply prose
+is omitted from that factual response; optional suggestions are labelled as advice.
+Named places present in tool results also require an explicit claim when repeated.
+The named Verifier checks forecast dates and screens instruction-like provider
+content, with successful verification checks recorded for the dashboard. Unknown values and compound objects cannot be cited as
 verified scalar facts. Numeric formatting such as `06` versus `6`, or `1,671`
 versus `1671`, is normalized where relevant.
 
-These checks validate declared claims and restrict unsupported numerical output;
-they are not a proof that every free-form sentence is true. Date selection,
-relevance and interpretation still need conversation evaluations.
+These checks validate structured facts and restrict unsupported numerical output.
+They do not constitute exhaustive natural-language fact checking: general advice
+and place names absent from the evidence still need live conversation evaluations.
+Supported forecast-date checks include today/tomorrow, day after tomorrow, weekdays,
+ISO dates, day-month dates and bounded explicit date ranges. Ambiguous references
+to trip dates or a weekend require clarification; arbitrary temporal language is
+not fully parsed. Current conditions cannot answer a future-date forecast.
 
 ### Provider behavior and comparisons
 
@@ -338,6 +484,108 @@ This simulator executes inside a local transaction. A real supplier integration
 would need separate durable action intents, provider idempotency and reconciliation
 for uncertain external outcomes. A local database transaction cannot make an
 external payment or reservation exactly-once.
+
+## Worked use cases
+
+The following are illustrative request flows, not transcripts of live tests.
+Provider results and wording vary. The roles choose bounded work; users do not
+need to type agent names or coordinate them manually.
+
+### 1. A quick weather question
+
+> “What is the weather in Hyderabad tomorrow? What should we carry?”
+
+The Planner requests weather through the Coordinator. The response cites the
+forecast row for tomorrow, resolved against the request time in Asia/Kolkata.
+Application validation rejects a citation for today even if its temperature
+happens to match tomorrow's. Checked weather values are rendered as sourced facts;
+packing suggestions are labelled as advice. No Researcher or Mediator is needed.
+If the provider is unavailable, the assistant must say so rather than invent rain.
+
+### 2. Researching two outings and explaining a compromise
+
+> “Compare a short outing around Charminar with a longer option including
+> Chowmahalla Palace, starting from Mecca Masjid. Show the plan visually.”
+
+The Planner asks for a date if one is missing. It may delegate a focused evidence
+question to the Researcher, or request compare_plans directly. Application tools
+resolve places, obtain walking routes and compute two options. The Mediator can
+then explain a compromise and recommend an existing feasible option. It cannot
+create new scores or override a hard requirement. The Planner receives the notes
+and the Coordinator delivers the checked comparison and local PNG schematic.
+
+If venue walking or wheelchair access is unknown, that remains visible. A shorter
+mapped route cannot prove the family's full walking requirement is satisfied.
+When group privacy applies, scoring still respects private hard constraints while
+personal thresholds, per-person scores and detailed blocker labels are withheld.
+
+### 3. A name, a preference and a correction
+
+> “Call me Sarvesh.”
+>
+> “I prefer vegetarian meals.”
+>
+> “Actually, I don't prefer vegetarian meals anymore.”
+
+The name changes immediately for that verified sender. A clear own-profile soft
+preference saves with a ten-minute undo code. A conflicting correction shows the
+old value/evidence beside the new value/evidence and asks for confirmation.
+A changed preference cannot be silently overwritten by an older undo operation.
+Another linked family member must confirm changes to their own preferences.
+
+“What do you remember about my family?” returns a readable memory card rather
+than raw database JSON. Sensitive entries are hidden under the group policy.
+
+### 4. Recording a dinner expense
+
+> “Share with group: Spent 1200 on dinner among Dad, Mom, Me.”
+
+The Planner extracts an expense draft with the explicit amount, description,
+participants and exact source quote. The Coordinator validates the values and
+shows an E-prefixed confirmation. The reporting sender confirms before a single
+expense record is written; repeated confirmation cannot create a duplicate.
+This is equal-split bookkeeping, not a payment or debt collection system.
+Missing participants trigger clarification rather than a guessed family list.
+
+Without the sharing prefix, sensitive expense requests are withheld with an
+explanation. “Show my expenses” is scoped to the reporting payer's records.
+
+### 5. Understanding a travel ticket screenshot
+
+A family member sends a readable PNG/JPEG/WebP screenshot. The application validates
+and re-encodes the attachment, then forwards it to the signed-in Planner. The
+Planner reports visible text and uncertainties. Missing years or timezones are
+not guessed. A reviewed I-prefixed confirmation is required before saving the
+draft itinerary, whose status remains informational rather than supplier-verified.
+Instructions embedded in a screenshot cannot approve changes or issue commands.
+
+### 6. Recovering from a simulated flight delay
+
+The operator triggers a stable simulated delay event. The dependency graph identifies
+items downstream of the flight, a new planning task begins, and older proposals
+are invalidated. A validated repair card shows exact time changes, extra costs,
+alternatives and expiry. An authorized linked family member sends its exact code.
+The Reservation role requests execution and the Coordinator applies simulator
+actions transactionally. Partial failures retain successful results and require
+new planning and approval for further changes. No real supplier is contacted.
+
+### 7. Proactive weather review
+
+With the Watcher configured and polling enabled, a fresh relevant rain observation
+on the simulated itinerary's date can queue an assessment. The application checks
+quiet hours, event deduplication and cooldown before spending a model call. The
+Watcher identifies eligible items worth reviewing; the Coordinator publishes only
+validated evidence and the review list. A weather observation does not prove that
+an activity is cancelled, and it does not authorize reservation changes.
+
+### 8. Provider outage during a presentation
+
+The operator explicitly enables cached-demo mode in the dashboard. Tool requests
+use successful historical entries at most seven days old, with age and demo labels.
+Missing cache entries remain unavailable. The mode does not fabricate a replacement
+route, call providers in the background or present historical weather as current.
+Switch and the model connection are still needed for a live conversation; the
+CLI fixture and isolated tests are the no-Switch local demonstration path.
 
 ## Stack
 
@@ -561,6 +809,20 @@ agent responsibilities, proposal states, tool activity and delivery status.
 Its data endpoints require authentication; it cannot approve proposals or execute actions.
 The token stays in the page input and is not saved in browser storage or URLs.
 
+The dashboard now provides a chronological timeline, an SVG dependency graph,
+paginated approval history, an evidence browser with source links and a Verifier
+check log. Operator controls can simulate a delay or toggle cached-demo mode.
+Neither control approves a proposal or executes a booking. The delay button calls
+the existing authenticated, idempotent endpoint; actual reservation authorization
+still comes from the configured Telegram approver.
+
+`POST /demo-mode` with `{"enabled":true}` enables historical-cache-only tool use.
+Successful cached evidence must be at most seven days old; missing entries return
+unavailable without contacting providers. Replies, comparison cards and generated
+visuals label cached-demo evidence as historical rather than live. Disable the
+mode with `{"enabled":false}`. Normal live mode does not silently use stale data.
+This is not an automatically prepopulated offline dataset.
+
 Run `python scripts/evaluate.py` for a reproducible scenario scorecard in
 `data/evaluation/scorecard.json`. This measures deterministic workflows and mocked
 provider boundaries; it does not claim live language-model conversation accuracy.
@@ -577,6 +839,8 @@ The dashboard shell is available at `/dashboard`; it contains no trip data.
 delay endpoint. The dashboard renders server values as text, keeps the token in
 the page input and exposes no approval or payment action. Refresh is manual.
 The local demo server must be running; starting it does not start the Coordinator.
+The trip views are read-only. Only the clearly labelled simulated controls write
+demo workflow state.
 
 ## Verification
 
@@ -588,8 +852,8 @@ uv run python scripts/evaluate.py
 uv run python scripts/crash_recovery_demo.py
 ```
 
-Latest local verification (November 6, 2026): **150 passing tests**, a
-**72/72 deterministic scenario scorecard**, and a passing process-crash exercise. The scorecard uses scripted
+Latest local verification (November 6, 2026): **193 passing tests**, a
+**115/115 deterministic scenario scorecard**, and a passing process-crash exercise. The scorecard uses scripted
 inputs and mocked provider failures; it is not a live LLM-quality score. GitHub
 Actions runs the tests, style checks and crash exercise independently.
 
@@ -620,8 +884,9 @@ Earlier live integration checks verified:
   through Switch. Overpass was unavailable during this check; bounded geocoding
   of the explicitly named extra attraction plus real walking routes succeeded.
 
-The most recent automatic routing, instant-name, soft-preference undo and
-dashboard changes have passed local tests. Their updated Switch deployment and
+The most recent memory routing, privacy/retention, forecast-date verification,
+approval throttling and dashboard changes have passed local tests. The dashboard
+was also checked in a browser using isolated fictional data. Their updated Switch deployment and
 live Telegram checks remain pending because the local Switch API was unavailable
 during the latest verification. Multi-person enrollment writes have not been
 live-tested with several real relatives.
@@ -629,6 +894,64 @@ live-tested with several real relatives.
 The first weather reply exposed a padded-date validation bug (`06` versus `6`).
 The validator now compares numeric values, regression tests cover the formatting
 case, and the live retry passed. No real supplier reservation or payment was made.
+
+## Privacy, retention and transparent memory
+
+`trip privacy` (or a natural privacy question) explains the local policy.
+`trip memory` or a natural memory question produces a readable card with the saved
+value, owner/reporter, timestamp and evidence message reference. It shows the
+sender's explicit facts and shareable family preferences, with personal mobility
+and health entries withheld by default.
+
+Runtime settings:
+
+```json
+{
+  "discussion_retention_days": 30,
+  "group_privacy": true
+}
+```
+
+These keys are optional and the values above are defaults. Completed, cancelled,
+failed or expired conversations older than the retention window are scrubbed in
+worker maintenance: chat entries, tool jobs and comparisons are removed, outbox
+text/media metadata is redacted, and a minimal expired discussion marker remains.
+Active assignments are not deleted mid-flight. Maintenance needs the worker to
+run; offline copies are not independently scheduled for erasure.
+
+Saved explicit facts, preferences, reviewed imports, decision audits and reported
+expenses have separate retention. This feature does not delete downloaded image
+files, generated PNG files, backups, Switch/Telegram history or provider copies.
+SQLite record redaction is not a forensic secure-erase guarantee.
+
+With group privacy enabled, personal health/mobility and expense requests require
+an explicit `Share with group:` prefix before processing. The bot explains this
+without repeating the details. Private-message delivery is not configured. A
+person's original group message may already be visible to everyone in Telegram.
+Sensitive saved preferences are excluded from ordinary Planner context; pending
+confirmation payloads and imported ticket references are withheld. Comparison
+scoring still respects private hard constraints while hiding personal scores and
+specific blocker details in group output. Sensitivity detection combines typed
+preference categories with keyword checks; it is not comprehensive medical-data
+classification or a full data-loss-prevention system.
+
+Examples:
+
+```text
+What do you remember about my family?
+What is your privacy policy?
+Share with group: Spent 1200 on dinner among Dad, Mom, Me
+Share with group: Show my expenses
+Forget my memory
+```
+
+Expense capture requires an explicit amount, description and split participants
+from the current message. A sender-scoped `E...` confirmation records the expense;
+no payment is made. Expense inspection is restricted to the reporting payer's
+records. Natural memory deletion uses an `F...` confirmation; `trip forget` remains
+an explicit operator-style shortcut. Decision attempts are limited to five per
+member per rolling minute, including failed guesses; replayed event IDs do not
+consume additional attempts.
 
 ## Current boundaries
 
@@ -674,7 +997,7 @@ development planning notes are excluded from this repository.
 
 ## Roadmap
 
-The next priorities build on the existing three roles:
+The next priorities build on the core roles and optional specialists:
 
 1. Activate the newest instructions and worker code in a connected Switch session;
    verify instant names, soft-memory undo and automatic handoffs in Telegram.
@@ -685,9 +1008,9 @@ The next priorities build on the existing three roles:
    evidence provenance and explicit unknowns.
 4. Add verified venue walking, rest opportunities and opening-hour interpretation
    before claiming complete comfort-aware day planning.
-5. Extend the dashboard with richer dependency graphics and evaluation trends.
+5. Extend dashboard filtering, operational metrics and evaluation trends.
 6. Add real flight-status events and supplier handoffs only with reconciliation,
    provider idempotency and clearly scoped user authorization.
 
-Adding more agents is not required for these improvements. New roles should have
-an independently useful responsibility and a testable contract.
+Optional specialists are described in the architecture section. More roles should be added only for an
+independently useful responsibility and a testable contract.

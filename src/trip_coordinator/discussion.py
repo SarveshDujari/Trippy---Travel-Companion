@@ -134,6 +134,27 @@ def accept(c, reply, now):
     if reply.uses_weather and snapshot["weather"]["status"] != "available":
         raise ValueError("A weather answer requires available forecast evidence")
     rendered = verify(reply, snapshot, current["request"])
+    c.execute(
+        insert(db.events).values(
+            id="verified:" + reply.discussion_id,
+            kind="verification_passed",
+            payload=json.dumps(
+                {
+                    "discussion_id": reply.discussion_id,
+                    "checks": [
+                        "active_assignment",
+                        "typed_contract",
+                        "claim_values",
+                        "forecast_scope",
+                        "provider_instruction_screen",
+                        "numeric_prose",
+                    ],
+                }
+            ),
+            status="recorded",
+            created_at=now,
+        )
+    )
     for fact in reply.facts:
         condition = (db.facts.c.sender == current["sender"]) & (db.facts.c.key == fact.key)
         values = {
@@ -215,7 +236,30 @@ def dispatch(c, discussion, config, forecast, now):
         evidence[job["id"]] = json.loads(job["result"])
         if job["name"] == "weather" and evidence[job["id"]]["status"] == "available":
             snapshot["weather"] = evidence[job["id"]]["data"]
+            if evidence[job["id"]].get("demo_mode"):
+                snapshot["weather"] = {
+                    **snapshot["weather"],
+                    "demo_mode": True,
+                    "age_seconds": evidence[job["id"]]["age_seconds"],
+                }
     snapshot["evidence"] = evidence
+    notes = json.loads(discussion.get("specialist_notes") or "{}")
+    evidence.update(notes.get("event_evidence", {}))
+    snapshot["specialist_notes"] = notes
+    snapshot["available_specialists"] = [
+        r
+        for r in ["researcher", "mediator"]
+        if getattr(config, r + "_participant_id") and r not in notes
+    ]
+    role = discussion.get("assigned_role") or "planner"
+    snapshot["assigned_role"] = role
+    if role == "watcher":
+        snapshot["simulated_itinerary"] = {
+            "mode": "SIMULATED itinerary; read-only relevance assessment",
+            "items": [dict(x) for x in c.execute(select(db.items)).mappings()],
+            "dependencies": [dict(x) for x in c.execute(select(db.edges)).mappings()],
+            "eligible_items": notes.get("eligible_items", []),
+        }
     snapshot["tool_calls_remaining"] = max(
         0,
         3
@@ -228,6 +272,31 @@ def dispatch(c, discussion, config, forecast, now):
     from .family import preferences
 
     snapshot["family_preferences"] = preferences(c)
+    from .privacy import SENSITIVE, SENSITIVE_KINDS, shared
+
+    if config.group_privacy:
+        share = shared(discussion["request"])
+        snapshot["family_preferences"] = [
+            p
+            for p in snapshot["family_preferences"]
+            if p["kind"] not in SENSITIVE_KINDS or (share and p["author"] == discussion["sender"])
+        ]
+        snapshot["conversation"] = [
+            m
+            for m in snapshot["conversation"]
+            if not SENSITIVE.search(m["body"]) or (share and m["sender"] == discussion["sender"])
+        ]
+        snapshot["this_persons_explicit_trip_details"] = [
+            f
+            for f in snapshot["this_persons_explicit_trip_details"]
+            if not SENSITIVE.search(f["value"]) or share
+        ]
+        snapshot[
+            "imported_itinerary"
+        ] = []  # references and ticket details stay out of generic group prompts
+        snapshot["group_privacy"] = (
+            "Do not reveal personal mobility, health, ticket references or expenses."
+        )
     snapshot["image_count"] = len(json.loads(discussion.get("attachments_json") or "[]"))
     snapshot["pending_confirmations"] = [
         dict(x)
@@ -241,6 +310,11 @@ def dispatch(c, discussion, config, forecast, now):
         ).mappings()
     ]
     snapshot["current_time"] = datetime.fromtimestamp(now, ZoneInfo("Asia/Kolkata")).isoformat()
+    if config.group_privacy:
+        snapshot["pending_confirmations"] = [
+            {k: x[k] for k in ["code", "kind", "expires_at", "status"]}
+            for x in snapshot["pending_confirmations"]
+        ]
     snapshot["request_time"] = datetime.fromtimestamp(
         discussion.get("request_time") or discussion["created_at"], ZoneInfo("Asia/Kolkata")
     ).isoformat()
@@ -264,7 +338,10 @@ def dispatch(c, discussion, config, forecast, now):
     enqueue(
         c,
         assignment,
-        f"@{config.planner_name} DISCUSSION_ASSIGNMENT\n" + json.dumps(payload),
+        f"@{config.planner_name if role == 'planner' else 'trip-' + role} "
+        + ("DISCUSSION_ASSIGNMENT" if role == "planner" else "SPECIALIST_ASSIGNMENT")
+        + "\n"
+        + json.dumps(payload),
         now,
         room_id=config.work_room_id or config.room_id,
         related_id=discussion["id"],
@@ -274,7 +351,9 @@ def dispatch(c, discussion, config, forecast, now):
                 "forward": json.loads(discussion.get("attachments_json") or "[]"),
             }
         )
-        if discussion.get("attachments_json") and discussion["attachments_json"] != "[]"
+        if role == "planner"
+        and discussion.get("attachments_json")
+        and discussion["attachments_json"] != "[]"
         else None,
     )
 

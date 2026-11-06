@@ -23,6 +23,7 @@ def setup(tmp_path):
         bridge_id="telegram",
         coordinator_agent_id="coordinator-id",
         conversation_enabled=True,
+        group_privacy=False,  # Legacy shared workflows; separate tests enable privacy.
         planner_participant_id="planner",
         reservation_participant_id="reservation",
         database_path=path,

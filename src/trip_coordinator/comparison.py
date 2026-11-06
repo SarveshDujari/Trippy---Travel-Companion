@@ -188,6 +188,22 @@ async def compare(engine, client, arguments, *, discussion_id=None):
                 "Unknown hard requirements block feasibility."
             ),
         }
+        if current and json.loads(current["context"] or "{}").get("group_privacy"):
+            # Keep all hard requirements in scoring, but do not expose personal thresholds.
+            for plan in data["plans"]:
+                evaluation = plan["evaluation"]
+                evaluation["scores"] = {}
+                evaluation["blockers"] = (
+                    ["A personal hard requirement is unmet or unverified"]
+                    if evaluation["blockers"]
+                    else []
+                )
+                evaluation["unknowns"] = (
+                    ["Some personal requirements need more evidence"]
+                    if evaluation["unknowns"]
+                    else []
+                )
+                evaluation["privacy_redacted"] = True
         with engine.begin() as c:
             if (
                 discussion_id
@@ -220,6 +236,9 @@ async def compare(engine, client, arguments, *, discussion_id=None):
 
 def card(data):
     lines = [f"OUTING OPTIONS · {data['date']}", f"Starting point: {data['origin']}"]
+    if any(p.get("demo_mode") for p in data.get("proof", [])):
+        age = max(p.get("age_seconds", 0) for p in data["proof"])
+        lines.insert(0, f"CACHED DEMO — historical evidence up to {age} seconds old; not live")
     for index, plan in enumerate(data["plans"], 1):
         evaluation = plan["evaluation"]
         lines += [
@@ -229,7 +248,11 @@ def card(data):
         ]
         lines += [f"{name}: {score}/100" for name, score in evaluation["scores"].items()]
         if not evaluation["scores"]:
-            lines.append("No confirmed family preferences yet; personal scores are not computed.")
+            lines.append(
+                "Personal preference breakdown is hidden by group privacy."
+                if evaluation.get("privacy_redacted")
+                else "No confirmed family preferences yet; personal scores are not computed."
+            )
         if evaluation["blockers"]:
             lines.append("Needs a change/check: " + "; ".join(evaluation["blockers"]))
         if evaluation["unknowns"]:

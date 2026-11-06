@@ -80,8 +80,28 @@ class DiscussionReply(StrictModel):
     image: "ImageReading | None" = None
     visual_plan: bool = False
     assistant_action: (
-        Literal["family", "approvals", "calendar", "status", "propose_changes"] | None
+        Literal[
+            "family",
+            "approvals",
+            "calendar",
+            "status",
+            "propose_changes",
+            "memory",
+            "privacy",
+            "expenses",
+            "forget",
+        ]
+        | None
     ) = None
+    expense: "ExpenseDraft | None" = None
+    suggestions: list[str] = Field(default_factory=list, max_length=4)
+
+
+class ExpenseDraft(StrictModel):
+    amount: str = Field(pattern=r"^\d{1,7}(?:\.\d{1,2})?$")
+    description: str = Field(min_length=1, max_length=200)
+    participants: list[str] = Field(min_length=1, max_length=20)
+    evidence: str = Field(min_length=1, max_length=500)
 
 
 class EvidenceClaim(StrictModel):
@@ -96,6 +116,26 @@ class ToolRequest(StrictModel):
     assignment_id: str
     tool: Literal["weather", "places", "route", "compare_plans"]
     arguments: dict = Field(default_factory=dict)
+
+
+class DelegateRequest(StrictModel):
+    kind: Literal["trip_delegate"]
+    discussion_id: str
+    assignment_id: str
+    role: Literal["researcher", "mediator"]
+    objective: str = Field(min_length=1, max_length=500)
+
+
+class SpecialistResult(StrictModel):
+    kind: Literal["trip_specialist_result"]
+    discussion_id: str
+    assignment_id: str
+    role: Literal["researcher", "mediator", "watcher"]
+    summary: str = Field(min_length=1, max_length=1500)
+    claims: list[EvidenceClaim] = Field(default_factory=list, max_length=12)
+    recommended_option: int | None = Field(default=None, ge=0, le=1)
+    affected_items: list[str] = Field(default_factory=list, max_length=10)
+    replan_suggested: bool = False
 
 
 class PreferenceDraft(StrictModel):
@@ -171,6 +211,13 @@ class RuntimeConfig(StrictModel):
     weather_enabled: bool = False
     work_room_id: str | None = None
     conversation_enabled: bool = False
+    discussion_retention_days: int = Field(default=30, ge=1, le=365)
+    group_privacy: bool = True
+    researcher_participant_id: str | None = None
+    mediator_participant_id: str | None = None
+    watcher_participant_id: str | None = None
+    watcher_quiet_start: int = Field(default=22, ge=0, le=23)
+    watcher_quiet_end: int = Field(default=7, ge=0, le=23)
 
     @field_validator("planner_name", "reservation_name")
     @classmethod
@@ -187,8 +234,32 @@ class RuntimeConfig(StrictModel):
             raise ValueError("private workroom must differ from the family room")
         humans = [m.participant_id for m in self.members]
         agents = [self.planner_participant_id, self.reservation_participant_id]
-        if len(set(humans)) != len(humans) or len(set(agents)) != 2 or set(humans) & set(agents):
+        agents += [
+            x
+            for x in [
+                self.researcher_participant_id,
+                self.mediator_participant_id,
+                self.watcher_participant_id,
+            ]
+            if x is not None
+        ]
+        if (
+            len(set(humans)) != len(humans)
+            or len(set(agents)) != len(agents)
+            or set(humans) & set(agents)
+        ):
             raise ValueError("participant identities must be unique across roles")
+        if (
+            any(
+                [
+                    self.researcher_participant_id,
+                    self.mediator_participant_id,
+                    self.watcher_participant_id,
+                ]
+            )
+            and not self.work_room_id
+        ):
+            raise ValueError("Specialists require a private workroom")
         return self
 
     @field_validator("bridge_url")

@@ -1,4 +1,4 @@
-"""Application-owned orchestration behind the three Switch participants.
+"""Application-owned orchestration behind the core and optional Switch participants.
 
 Coordinator routing is deterministic. Planner/reservation decisions arrive from
 distinct authenticated Switch participants; tests inject protocol fixtures only.
@@ -227,6 +227,31 @@ class Coordinator:
                 key = f"{self.config.bridge_id}:{self.config.room_id}:{message.message_id}"
                 if not c.execute(select(db.inbox.c.id).where(db.inbox.c.id == key)).first():
                     c.execute(insert(db.inbox).values(id=key, received_at=now, outcome="ignored"))
+                    # Persist failed attempts outside the per-message savepoint.
+                    if message.sender in self.members and re.fullmatch(
+                        r"(?:trip\s+)?(?:approve|reject)\s+\S+", message.body.strip(), re.I
+                    ):
+                        bucket = "approval-attempts:" + message.sender
+                        raw = c.execute(
+                            select(db.state.c.value).where(db.state.c.key == bucket)
+                        ).scalar()
+                        attempts = [t for t in json.loads(raw or "[]") if t > now - 60]
+                        if len(attempts) >= 5:
+                            enqueue(
+                                c,
+                                key + ":limited",
+                                "Too many decision attempts. Wait one minute.",
+                                now,
+                            )
+                            c.execute(
+                                update(db.inbox)
+                                .where(db.inbox.c.id == key)
+                                .values(outcome="rate_limited")
+                            )
+                            if isinstance(envelope.get("sequence"), int):
+                                self._state(c, "cursor", str(envelope["sequence"]))
+                            return
+                        self._state(c, bucket, json.dumps(attempts + [now]))
                     try:
                         with c.begin_nested():
                             outcome = self._route(c, message, now, incoming_room)
@@ -259,10 +284,60 @@ class Coordinator:
     def _route(self, c, message, now, incoming_room=None):
         if message.sender_kind == "platform":
             return "ignored_platform"
+        from . import specialists
+        from .contracts import DelegateRequest, SpecialistResult
+
+        specialist_role = next(
+            (
+                r
+                for r in specialists.NAMES
+                if specialists.participant(self.config, r) == message.sender
+            ),
+            None,
+        )
+        if specialist_role:
+            if incoming_room != self.config.work_room_id:
+                return "ignored_wrong_agent_room"
+            if not message.body.lstrip().startswith("{"):
+                return "ignored_agent_commentary"
+            value = json.loads(message.body)
+            try:
+                current = specialists.active(
+                    c, value.get("discussion_id"), value.get("assignment_id"), now
+                )
+                if current["assigned_role"] != specialist_role:
+                    raise ValueError("This agent does not own the active assignment")
+                if value.get("kind") == "trip_tool_request" and specialist_role == "researcher":
+                    discussion.request_tool(c, ToolRequest.model_validate(value), now)
+                    return "specialist_tool_requested"
+                result = SpecialistResult.model_validate(value)
+                if result.role != specialist_role:
+                    raise ValueError("Authenticated specialist identity does not match its result")
+                specialists.accept(c, result, self.config, now)
+            except ValueError as exc:
+                raise Rejected(str(exc)) from exc
+            return "specialist_result"
         if message.sender == self.config.planner_participant_id:
             if self.config.work_room_id and incoming_room != self.config.work_room_id:
                 return "ignored_wrong_agent_room"
             if message.body.lstrip().startswith("{"):
+                value = json.loads(message.body)
+                if value.get("kind") in {"trip_reply", "trip_tool_request", "trip_delegate"}:
+                    role = c.execute(
+                        select(db.discussions.c.assigned_role).where(
+                            db.discussions.c.id == value.get("discussion_id")
+                        )
+                    ).scalar()
+                    if role not in {None, "planner"}:
+                        raise Rejected("Planner does not own the active specialist assignment")
+                if value.get("kind") == "trip_delegate":
+                    try:
+                        specialists.delegate(
+                            c, DelegateRequest.model_validate(value), self.config, now
+                        )
+                    except ValueError as exc:
+                        raise Rejected(str(exc)) from exc
+                    return "specialist_delegated"
                 if json.loads(message.body).get("kind") == "trip_tool_request":
                     request = ToolRequest.model_validate_json(message.body)
                     try:
@@ -280,14 +355,40 @@ class Coordinator:
                         return "ignored_stale_discussion"
                     text_reply = reply.reply
                     saved = row(c, db.discussions, reply.discussion_id)
+                    from .privacy import SENSITIVE, shared
+
+                    if (
+                        self.config.group_privacy
+                        and not shared(saved["request"])
+                        and SENSITIVE.search(reply.reply + " " + " ".join(reply.suggestions))
+                    ):
+                        raise Rejected("Personal details require an explicit group-sharing request")
                     from .family import propose_import, propose_member, propose_preference
 
                     try:
+                        from .privacy import SENSITIVE_KINDS
+
+                        if (
+                            self.config.group_privacy
+                            and not shared(saved["request"])
+                            and (
+                                any(p.kind in SENSITIVE_KINDS for p in reply.preferences)
+                                or reply.expense
+                                or any(f.key == "mobility" for f in reply.facts)
+                            )
+                        ):
+                            raise ValueError(
+                                "Personal details need an explicit group-sharing request"
+                            )
                         additions = [
                             propose_preference(c, draft, saved, now) for draft in reply.preferences
                         ]
                         if reply.member_action:
                             additions.append(propose_member(c, reply.member_action, saved, now))
+                        if reply.expense:
+                            from .memory import propose_expense
+
+                            additions.append(propose_expense(c, reply.expense, saved, now))
                         if reply.image:
                             text_reply = (
                                 "From your image — unconfirmed, please check:\n" + text_reply
@@ -301,9 +402,25 @@ class Coordinator:
                         raise Rejected(str(exc)) from exc
                     citations = verify(reply, json.loads(saved["context"]), saved["request"])
                     if citations:
-                        text_reply += "\n" + citations
+                        # Factual output is rendered from checked values, not model prose.
+                        text_reply = (
+                            "Verified tool facts:\n"
+                            + citations
+                            + ("\n\n" + "\n\n".join(additions) if additions else "")
+                        )
+                        if reply.suggestions:
+                            text_reply += (
+                                "\n\nPlanning suggestions (not verified facts):\n"
+                                + "\n".join(reply.suggestions)
+                            )
+                    elif json.loads(saved["context"]).get("evidence"):
+                        text_reply = "Planning guidance (not verified tool facts):\n" + text_reply
                     if reply.assistant_action:
-                        if reply.assistant_action == "propose_changes":
+                        if reply.assistant_action == "forget":
+                            from .memory import propose_forget
+
+                            text_reply += "\n" + propose_forget(c, saved, now)
+                        elif reply.assistant_action == "propose_changes":
                             # Routing can request a proposal, never authorize execution.
                             self._start(c, saved["request"][:1000], now)
                             text_reply += (
@@ -317,6 +434,10 @@ class Coordinator:
                                 body="trip " + reply.assistant_action,
                                 timestamp=int(now * 1000),
                             )
+                            if shared(saved["request"]):
+                                original = original.model_copy(
+                                    update={"body": "Share with group: " + original.body}
+                                )
                             self._route(c, original, now)
                     from .comparison import card
 
@@ -386,6 +507,47 @@ class Coordinator:
         # Old/replayed human commands cannot approve or mutate current state.
         if abs(now - message.timestamp / 1000) > 120:
             raise Rejected("Command is older than two minutes; send a fresh command")
+        from .privacy import NOTICE, policy, restricted, shared
+
+        if restricted(message.body, self.config):
+            enqueue(c, message.message_id + ":privacy", NOTICE, now, show_reference=False)
+            return "privacy_withheld"
+        explicit_share = shared(message.body)
+        if explicit_share:
+            # Preserve sharing evidence for discussions, strip only for explicit handlers.
+            command_body = message.body.split(":", 1)[1].strip()
+        else:
+            command_body = message.body
+        if command_body.casefold() in {"trip privacy", "what is your privacy policy"}:
+            enqueue(
+                c,
+                message.message_id + ":privacy",
+                policy(self.config.discussion_retention_days),
+                now,
+                show_reference=False,
+            )
+            return "privacy_policy"
+        if command_body.casefold() in {
+            "trip memory",
+            "what do you remember",
+            "what do you know about my family",
+        }:
+            from .memory import card
+
+            enqueue(
+                c,
+                message.message_id + ":memory",
+                card(
+                    c,
+                    message.sender,
+                    include_sensitive=explicit_share or not self.config.group_privacy,
+                ),
+                now,
+                show_reference=False,
+            )
+            return "memory_card"
+        if explicit_share and command_body.startswith("trip "):
+            message = message.model_copy(update={"body": command_body})
         from .family import command as family_command
 
         try:
@@ -699,6 +861,9 @@ class Coordinator:
     def expire(self):
         now = int(self.clock())
         with self.engine.begin() as c:
+            from .privacy import expire
+
+            expire(c, now, self.config.discussion_retention_days)
             for task in c.execute(select(db.tasks).where(~db.tasks.c.state.in_(FINAL))).mappings():
                 deadline = task["deadline"]
                 if task["state"] == "awaiting_approval":

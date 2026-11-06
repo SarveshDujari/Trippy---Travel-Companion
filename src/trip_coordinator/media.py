@@ -93,7 +93,9 @@ def render_plan(c, comparison_id=None):
         body = json.loads(latest["body"])
         draw.text(
             (45, 90),
-            "Route estimates from live tools / schematic comparison",
+            "CACHED DEMO / historical estimates / not live"
+            if any(p.get("demo_mode") for p in body.get("proof", []))
+            else "Mapped route estimates / schematic comparison",
             font=font,
             fill="#7dd3fc",
         )
@@ -125,7 +127,9 @@ def render_plan(c, comparison_id=None):
             draw.text(
                 (x + 20, 695),
                 (
-                    "No personal preferences scored"
+                    "Personal breakdown hidden"
+                    if rank.get("privacy_redacted")
+                    else "No personal preferences scored"
                     if not rank["scores"]
                     else "Needs checks"
                     if rank["blockers"]

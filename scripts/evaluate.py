@@ -23,6 +23,8 @@ def main():
             "tests/test_assistant_experience.py",
             "tests/test_family_images.py",
             "tests/test_real_comparison.py",
+            "tests/test_memory_safety.py",
+            "tests/test_specialists.py",
             f"--junitxml={report}",
         ],
         cwd=ROOT,
